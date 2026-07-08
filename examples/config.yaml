@@ -22,7 +22,8 @@ http:
 
 network:
   # direct, none, off, env, or a proxy URL.
-  # Supports http://, https://, socks4://, socks5://, and socks5h://.
+  # Supports http://, https://, socks5://, and socks5h://.
+  # In Go's net/http transport, socks5 behaves like socks5h.
   proxy: direct
 
   # system, udp://, tcp://, dot://, or https:// DoH URL.

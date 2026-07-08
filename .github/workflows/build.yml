@@ -9,7 +9,10 @@ on:
   push:
     paths-ignore:
       - "docs/**"
+      - "examples/**"
       - "README.md"
+      - ".gitignore"
+      - "LICENSE"
       - ".github/ISSUE_TEMPLATE/**"
     branches:
       - main
