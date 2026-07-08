@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/UruhaLushia/piko"
-	"github.com/UruhaLushia/piko/dns"
 )
 
 func run(ctx context.Context, rawURL string, opts cliOptions) error {
@@ -31,7 +30,7 @@ func run(ctx context.Context, rawURL string, opts cliOptions) error {
 	headers := parseHeaders(opts.headers)
 	var resolver piko.Resolver
 	if opts.dns != "" {
-		resolver, err = dns.ParseResolver(opts.dns)
+		resolver, err = piko.ParseResolver(opts.dns)
 		if err != nil {
 			return err
 		}

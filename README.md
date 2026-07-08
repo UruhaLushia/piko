@@ -123,7 +123,7 @@ _ = data
 Use custom DNS and proxy:
 
 ```go
-resolver, err := dns.ParseResolver("https://cloudflare-dns.com/dns-query")
+resolver, err := piko.ParseResolver("https://cloudflare-dns.com/dns-query")
 if err != nil {
 	return err
 }
@@ -147,11 +147,7 @@ result, err := client.Download(ctx, "https://example.com/file.pkg")
 Import helper packages when needed:
 
 ```go
-import (
-	"net/http"
-
-	"github.com/UruhaLushia/piko/dns"
-)
+import "net/http"
 ```
 
 ## HTTP Client
