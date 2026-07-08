@@ -72,6 +72,21 @@ func newHTTPClient(timeout time.Duration, maxConnsPerHost int, protocol Protocol
 	})
 }
 
+func newHTTPClients(count int, timeout time.Duration, protocol Protocol, proxy string, proxyFunc func(*http.Request) (*url.URL, error), resolver Resolver) ([]*http.Client, error) {
+	if count < 1 {
+		count = 1
+	}
+	clients := make([]*http.Client, 0, count)
+	for range count {
+		client, err := newHTTPClient(timeout, 1, protocol, proxy, proxyFunc, resolver)
+		if err != nil {
+			return nil, err
+		}
+		clients = append(clients, client)
+	}
+	return clients, nil
+}
+
 func (o HTTPOptions) normalize() HTTPOptions {
 	defaults := DefaultHTTPOptions()
 	if o.Timeout <= 0 {

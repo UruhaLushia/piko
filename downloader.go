@@ -33,18 +33,20 @@ func NewClient(opts Options) (*Client, error) {
 
 	clients := compactHTTPClients(opts.HTTPClients)
 	client := opts.HTTPClient
-	if client == nil && len(clients) > 0 {
+	switch {
+	case client != nil:
+		if len(clients) == 0 {
+			clients = []*http.Client{client}
+		}
+	case len(clients) > 0:
 		client = clients[0]
-	}
-	if client == nil {
+	default:
 		var err error
-		client, err = newHTTPClient(opts.Timeout, opts.Connections, opts.Protocol, opts.Proxy, opts.ProxyFunc, opts.Resolver)
+		clients, err = newHTTPClients(opts.Connections, opts.Timeout, opts.Protocol, opts.Proxy, opts.ProxyFunc, opts.Resolver)
 		if err != nil {
 			return nil, err
 		}
-	}
-	if len(clients) == 0 {
-		clients = []*http.Client{client}
+		client = clients[0]
 	}
 
 	return &Client{opts: opts, client: client, clients: clients}, nil
