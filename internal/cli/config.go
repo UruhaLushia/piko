@@ -48,7 +48,6 @@ type httpConfig struct {
 	UserAgent      *string       `json:"user-agent" yaml:"user-agent" toml:"user-agent"`
 	UserAgentSnake *string       `json:"user_agent" yaml:"user_agent" toml:"user_agent"`
 	UserAgentCamel *string       `json:"userAgent" yaml:"userAgent" toml:"userAgent"`
-	UA             *string       `json:"ua" yaml:"ua" toml:"ua"`
 	Headers        configHeaders `json:"headers" yaml:"headers" toml:"headers"`
 }
 
@@ -150,7 +149,7 @@ func applyConfig(cmd *cobra.Command, opts *cliOptions) error {
 	if value, ok := firstString(config.Network.DNS); ok && !flagChanged(cmd, "dns") {
 		opts.dns = value
 	}
-	if value, ok := firstString(config.HTTP.UserAgent, config.HTTP.UserAgentSnake, config.HTTP.UserAgentCamel, config.HTTP.UA); ok && !flagChanged(cmd, "ua", "user-agent") {
+	if value, ok := firstString(config.HTTP.UserAgent, config.HTTP.UserAgentSnake, config.HTTP.UserAgentCamel); ok && !flagChanged(cmd, "user-agent") {
 		opts.userAgent = value
 	}
 	return nil

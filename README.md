@@ -77,7 +77,7 @@ Useful flags:
 
 ```text
     --config <path>             config file or directory (default ~/.piko)
--o, --output <path>             output path or NUL / /dev/null
+-o, --output <path>             output file; discard with NUL on Windows or /dev/null on Unix
 -f, --force                     overwrite output
 -n, --connections <n>           parallel connections
     --retry <n>                 retry count
@@ -85,12 +85,12 @@ Useful flags:
     --timeout <duration>        dial/header timeout
     --stall-timeout <duration>  cancel stalled reads
     --http <auto|h1|h2|h2c>     HTTP protocol
--H, --header <header>           custom request header, repeatable
+-H, --header <header>           custom request header, e.g. "Name: value"; repeatable
     --connect-strategy <mode>   IP strategy: round-robin (default), sequential, or fastest
     --ip-family <family>        auto, ipv4, ipv6, prefer-ipv4, or prefer-ipv6
     --proxy <url>               proxy URL, env, direct, or none (default direct)
     --dns <dns>                 system, udp://, tcp://, dot://, or https:// DoH URL
-    --ua <ua>                   user agent
+-A, --user-agent <ua>           user agent
 ```
 
 ## Library

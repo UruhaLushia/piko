@@ -68,7 +68,7 @@ func NewRootCommand() *cobra.Command {
 
 	flags := cmd.Flags()
 	flags.StringVar(&opts.config, "config", opts.config, "config file or directory")
-	flags.StringVarP(&opts.output, "output", "o", "", "output path or NUL / /dev/null")
+	flags.StringVarP(&opts.output, "output", "o", "", "output file; discard with NUL on Windows or /dev/null on Unix")
 	flags.BoolVarP(&opts.force, "force", "f", false, "overwrite output")
 	flags.IntVarP(&opts.connections, "connections", "n", opts.connections, "parallel connections")
 	flags.IntVar(&opts.retries, "retry", opts.retries, "retry count")
@@ -79,10 +79,9 @@ func NewRootCommand() *cobra.Command {
 	flags.StringVar(&opts.strategy, "connect-strategy", opts.strategy, "IP connection strategy: round-robin, sequential, fastest")
 	flags.StringVar(&opts.strategy, "connection-strategy", opts.strategy, "IP connection strategy alias for --connect-strategy")
 	flags.StringVar(&opts.ipFamily, "ip-family", opts.ipFamily, "IP family: auto, ipv4, ipv6, prefer-ipv4, prefer-ipv6")
-	flags.StringArrayVarP(&opts.headers, "header", "H", nil, "custom request header, repeatable")
+	flags.StringArrayVarP(&opts.headers, "header", "H", nil, `custom request header, e.g. "Name: value"; repeatable`)
 	flags.StringVar(&opts.proxy, "proxy", "", "proxy URL, env, direct, or none (default direct)")
 	flags.StringVar(&opts.dns, "dns", "", "DNS: system, udp://1.1.1.1, dot://1.1.1.1, or https://.../dns-query")
-	flags.StringVar(&opts.userAgent, "ua", opts.userAgent, "user agent")
-	flags.StringVar(&opts.userAgent, "user-agent", opts.userAgent, "user agent")
+	flags.StringVarP(&opts.userAgent, "user-agent", "A", opts.userAgent, "user agent")
 	return cmd
 }
