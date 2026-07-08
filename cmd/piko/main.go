@@ -87,7 +87,7 @@ func newRootCommand() *cobra.Command {
 	flags.BoolVarP(&opts.force, "force", "f", false, "overwrite output")
 	flags.IntVarP(&opts.connections, "connections", "n", opts.connections, "parallel connections")
 	flags.IntVar(&opts.retries, "retry", opts.retries, "retry count")
-	flags.StringVarP(&opts.partSize, "part-size", "k", opts.partSize, "range part size")
+	flags.StringVarP(&opts.partSize, "part-size", "k", opts.partSize, "max range part size")
 	flags.DurationVar(&opts.timeout, "timeout", opts.timeout, "dial/header timeout")
 	flags.DurationVar(&opts.stallTimeout, "stall-timeout", opts.stallTimeout, "cancel stalled reads")
 	flags.StringVar(&opts.protocol, "http", opts.protocol, "HTTP protocol: auto, h1, h2, h2c")
@@ -144,7 +144,7 @@ func run(ctx context.Context, rawURL string, opts cliOptions) error {
 		Resolver:           resolver,
 		Started: func(result piko.Result) {
 			if result.Parallel {
-				fmt.Fprintf(os.Stdout, "parallel download: %s (%s, %d connections, pieces %s)\n", result.Output, formatBytes(result.Size), result.Connections, formatBytes(result.PartSize))
+				fmt.Fprintf(os.Stdout, "parallel download: %s (%s, %d connections, adaptive pieces up to %s)\n", result.Output, formatBytes(result.Size), result.Connections, formatBytes(result.PartSize))
 				return
 			}
 			fmt.Fprintf(os.Stdout, "single connection: %s\n", result.Output)

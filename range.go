@@ -7,12 +7,18 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"time"
 )
 
 type part struct {
-	index int
-	start int64
-	end   int64
+	index    int
+	start    int64
+	end      int64
+	requeues int
+}
+
+func (p part) length() int64 {
+	return p.end - p.start + 1
 }
 
 func (d *downloader) downloadParts(ctx context.Context, output string, size int64, partSize int64, concurrency int, force bool) error {
@@ -62,48 +68,57 @@ func (d *downloader) downloadPartsToWriter(ctx context.Context, writer io.Writer
 
 	d.done.Store(0)
 	d.emitProgress(size, false)
-	parts := make(chan part, concurrency*2)
 	errCh := make(chan error, 1)
 	var wg sync.WaitGroup
+	scheduler := newPartScheduler(size, partSize, concurrency)
 
-	wg.Go(func() {
-		defer close(parts)
-		index := 0
-		for start := int64(0); start < size; start += partSize {
-			end := min(start+partSize-1, size-1)
-			index++
-			p := part{index: index, start: start, end: end}
-			select {
-			case parts <- p:
-			case <-ctx.Done():
-				return
-			}
-		}
-	})
-
+	startWorkers := make(chan struct{})
 	for workerID := range concurrency {
 		client := d.clients[workerID%len(d.clients)]
 		wg.Go(func() {
+			select {
+			case <-startWorkers:
+			case <-ctx.Done():
+				return
+			}
 			for {
-				select {
-				case <-ctx.Done():
+				if err := ctx.Err(); err != nil {
 					return
-				case p, ok := <-parts:
-					if !ok {
-						return
-					}
-					if err := d.downloadRange(ctx, client, writer, p); err != nil {
-						select {
-						case errCh <- err:
-							cancel()
-						default:
-						}
-						return
-					}
 				}
+				p, ok := scheduler.nextPart(workerID)
+				if !ok {
+					if scheduler.hasInFlight() {
+						if err := sleepWithContext(ctx, idlePartPoll); err != nil {
+							return
+						}
+						continue
+					}
+					return
+				}
+				active := scheduler.activate(workerID, p)
+				started := time.Now()
+				offset, err := d.downloadRange(ctx, client, writer, active)
+				scheduler.finish(workerID, active)
+				if err != nil {
+					p.end = active.end.Load()
+					if ctx.Err() == nil && isRetryableDownloadError(err) {
+						if scheduler.requeue(p, offset, max(d.retries*4, 8)) {
+							continue
+						}
+						err = fmt.Errorf("part %d retry budget exhausted at byte %d: %w", p.index, offset, err)
+					}
+					select {
+					case errCh <- err:
+						cancel()
+					default:
+					}
+					return
+				}
+				scheduler.record(workerID, max(offset-p.start, 0), time.Since(started))
 			}
 		})
 	}
+	close(startWorkers)
 	wg.Wait()
 
 	select {
@@ -119,56 +134,80 @@ func (d *downloader) downloadPartsToWriter(ctx context.Context, writer io.Writer
 	return nil
 }
 
-func (d *downloader) downloadRange(ctx context.Context, client *http.Client, writer io.WriterAt, p part) error {
+func (d *downloader) downloadRange(ctx context.Context, client *http.Client, writer io.WriterAt, active *activePart) (int64, error) {
+	p := active.part
 	offset := p.start
 	var lastErr error
 	for attempt := 0; attempt <= d.retries; attempt++ {
-		if offset > p.end {
-			return nil
+		end := active.end.Load()
+		if offset > end {
+			return offset, nil
 		}
 		if err := ctx.Err(); err != nil {
-			return err
+			return offset, err
 		}
+		active.offset.Store(offset)
 
-		attemptCtx, cancel := context.WithCancel(ctx)
+		attemptCtx, attemptCancel := context.WithCancel(ctx)
+		cancelID := active.setCancel(attemptCancel)
+		finishAttempt := func() {
+			attemptCancel()
+			active.clearCancel(cancelID)
+		}
 		req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, d.url, nil)
 		if err != nil {
-			cancel()
-			return err
+			finishAttempt()
+			return offset, err
 		}
 		d.setCommonHeaders(req)
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, p.end))
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, end))
 
 		resp, err := client.Do(req)
 		if err != nil {
-			cancel()
+			if resp != nil {
+				resp.Body.Close()
+			}
+			finishAttempt()
+			if offset > active.end.Load() {
+				return offset, nil
+			}
 			lastErr = err
 			if !isRetryableDownloadError(err) {
-				return err
+				return offset, err
+			}
+			if ctx.Err() == nil && attemptCtx.Err() != nil {
+				return offset, err
 			}
 		} else {
-			err = d.copyRange(attemptCtx, cancel, writer, resp, p.index, offset, p.end, &offset)
+			attemptStart := offset
+			err = d.copyRange(attemptCtx, attemptCancel, writer, resp, p.index, attemptStart, end, &offset, active, partLease(p))
 			resp.Body.Close()
-			cancel()
+			finishAttempt()
 			if err == nil {
-				return nil
+				return offset, nil
+			}
+			if offset > active.end.Load() {
+				return offset, nil
 			}
 			lastErr = err
 			if !isRetryableDownloadError(err) {
-				return err
+				return offset, err
+			}
+			if ctx.Err() == nil && (offset > attemptStart || attemptCtx.Err() != nil) {
+				return offset, err
 			}
 		}
 
 		if attempt < d.retries {
 			if err := sleepWithContext(ctx, retryDelay(attempt)); err != nil {
-				return err
+				return offset, err
 			}
 		}
 	}
-	return fmt.Errorf("part %d failed at byte %d: %w", p.index, offset, lastErr)
+	return offset, fmt.Errorf("part %d failed at byte %d: %w", p.index, offset, lastErr)
 }
 
-func (d *downloader) copyRange(ctx context.Context, cancel context.CancelFunc, writer io.WriterAt, resp *http.Response, partIndex int, requestStart int64, requestEnd int64, offset *int64) error {
+func (d *downloader) copyRange(ctx context.Context, cancel context.CancelFunc, writer io.WriterAt, resp *http.Response, partIndex int, requestStart int64, requestEnd int64, offset *int64, active *activePart, lease time.Duration) error {
 	if resp.StatusCode != http.StatusPartialContent {
 		return httpStatusError{partIndex: partIndex, code: resp.StatusCode, status: resp.Status}
 	}
@@ -181,38 +220,56 @@ func (d *downloader) copyRange(ctx context.Context, cancel context.CancelFunc, w
 	if progress != nil {
 		defer close(progress)
 	}
+	stopLease := startLeaseMonitor(cancel, lease)
+	defer stopLease()
 
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 
-		readSize := min(int64(len(buf)), requestEnd-*offset+1)
+		end := active.end.Load()
+		if *offset > end {
+			return nil
+		}
+		readSize := min(int64(len(buf)), end-*offset+1)
 		n, readErr := resp.Body.Read(buf[:int(readSize)])
 		if n > 0 {
-			writeSize := min(int64(n), requestEnd-*offset+1)
+			active.mu.Lock()
+			end = active.end.Load()
+			if *offset > end {
+				active.mu.Unlock()
+				return nil
+			}
+			writeSize := min(int64(n), end-*offset+1)
 			written, writeErr := writer.WriteAt(buf[:int(writeSize)], *offset)
 			if writeErr != nil {
+				active.mu.Unlock()
 				return writeErr
 			}
 			if int64(written) != writeSize {
+				active.mu.Unlock()
 				return io.ErrShortWrite
 			}
 			*offset += writeSize
-			d.addProgress(writeSize, 0)
+			active.offset.Store(*offset)
+			active.mu.Unlock()
+			if writeSize > 0 {
+				d.addProgress(writeSize, 0)
+			}
 			if progress != nil {
 				select {
 				case progress <- struct{}{}:
 				default:
 				}
 			}
-			if writeSize < int64(n) || *offset > requestEnd {
+			if writeSize < int64(n) {
 				return nil
 			}
 		}
 
 		if readErr == io.EOF {
-			if *offset > requestEnd {
+			if *offset > active.end.Load() {
 				return nil
 			}
 			return io.ErrUnexpectedEOF
