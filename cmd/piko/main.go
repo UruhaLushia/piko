@@ -31,6 +31,7 @@ type cliOptions struct {
 	timeout      time.Duration
 	stallTimeout time.Duration
 	protocol     string
+	strategy     string
 	proxy        string
 	noProxy      bool
 	dns          string
@@ -54,6 +55,7 @@ func newRootCommand() *cobra.Command {
 		timeout:      defaults.Timeout,
 		stallTimeout: defaults.StallTimeout,
 		protocol:     defaults.Protocol.String(),
+		strategy:     defaults.ConnectionStrategy.String(),
 		userAgent:    defaults.UserAgent,
 	}
 
@@ -88,6 +90,8 @@ func newRootCommand() *cobra.Command {
 	flags.DurationVar(&opts.timeout, "timeout", opts.timeout, "dial/header timeout")
 	flags.DurationVar(&opts.stallTimeout, "stall-timeout", opts.stallTimeout, "cancel stalled reads")
 	flags.StringVar(&opts.protocol, "http", opts.protocol, "HTTP protocol: auto, h1, h2, h2c")
+	flags.StringVar(&opts.strategy, "connect-strategy", opts.strategy, "IP connection strategy: sequential, round-robin, fastest")
+	flags.StringVar(&opts.strategy, "connection-strategy", opts.strategy, "IP connection strategy alias for --connect-strategy")
 	flags.StringVar(&opts.proxy, "proxy", "", "proxy URL, env, direct, or none")
 	flags.BoolVar(&opts.noProxy, "no-proxy", false, "disable proxy")
 	flags.StringVar(&opts.dns, "dns", "", "resolver: system, udp://1.1.1.1, dot://1.1.1.1, or https://.../dns-query")
@@ -103,6 +107,10 @@ func run(ctx context.Context, rawURL string, opts cliOptions) error {
 		return fmt.Errorf("--part-size: %w", err)
 	}
 	protocol, err := piko.ParseProtocol(opts.protocol)
+	if err != nil {
+		return err
+	}
+	strategy, err := piko.ParseConnectionStrategy(opts.strategy)
 	if err != nil {
 		return err
 	}
@@ -124,17 +132,18 @@ func run(ctx context.Context, rawURL string, opts cliOptions) error {
 	printer := newProgressPrinter(os.Stdout)
 	startedAt := time.Now()
 	result, err := piko.Download(ctx, rawURL, piko.Options{
-		Output:       opts.output,
-		Connections:  opts.connections,
-		Retries:      opts.retries,
-		Force:        opts.force,
-		PartSize:     partSize,
-		Timeout:      opts.timeout,
-		StallTimeout: opts.stallTimeout,
-		UserAgent:    opts.userAgent,
-		Protocol:     protocol,
-		Proxy:        proxy,
-		Resolver:     resolver,
+		Output:             opts.output,
+		Connections:        opts.connections,
+		Retries:            opts.retries,
+		Force:              opts.force,
+		PartSize:           partSize,
+		Timeout:            opts.timeout,
+		StallTimeout:       opts.stallTimeout,
+		UserAgent:          opts.userAgent,
+		Protocol:           protocol,
+		ConnectionStrategy: strategy,
+		Proxy:              proxy,
+		Resolver:           resolver,
 		Started: func(result piko.Result) {
 			if result.Parallel {
 				fmt.Fprintf(os.Stdout, "parallel download: %s (%s, %d connections, pieces %s)\n", result.Output, formatBytes(result.Size), result.Connections, formatBytes(result.PartSize))

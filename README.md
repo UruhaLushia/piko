@@ -2,7 +2,7 @@
 
 A small parallel downloader for CLI and Go programs.
 
-`piko` can save to a file, discard output for speed tests, or return downloaded bytes to your own code. It supports HTTP protocol selection, custom DNS resolvers, proxies, retries, and progress callbacks.
+`piko` can save to a file, discard output for speed tests, or return downloaded bytes to your own code. It supports HTTP protocol selection, connection strategies, custom DNS resolvers, proxies, retries, and progress callbacks.
 
 ## Install
 
@@ -32,6 +32,12 @@ piko -n 32 -o /dev/null https://example.com/file.pkg
 piko --http h2 https://example.com/file.pkg
 piko --http h1.1 https://example.com/file.pkg
 
+# Spread parallel dials across resolved IPs
+piko -n 32 --connect-strategy round-robin https://example.com/file.pkg
+
+# Race resolved IPs and use the fastest connection
+piko -n 32 --connect-strategy fastest https://example.com/file.pkg
+
 # Proxy
 piko --proxy http://127.0.0.1:7890 https://example.com/file.pkg
 piko --no-proxy https://example.com/file.pkg
@@ -53,6 +59,7 @@ Useful flags:
     --timeout <duration>        dial/header timeout
     --stall-timeout <duration>  cancel stalled reads
     --http <auto|h1|h2|h2c>     HTTP protocol
+    --connect-strategy <mode>   IP strategy: sequential, round-robin, or fastest
     --proxy <url>               proxy URL, env, direct, or none
     --no-proxy                  disable proxy
     --dns <resolver>            system, udp://, tcp://, dot://, or https:// DoH URL
@@ -108,9 +115,10 @@ if err != nil {
 }
 
 client, err := piko.NewClient(piko.Options{
-	Connections: 16,
-	Proxy:       "http://127.0.0.1:7890",
-	Resolver:    resolver,
+	Connections:        16,
+	ConnectionStrategy: piko.ConnectionStrategyFastest,
+	Proxy:              "http://127.0.0.1:7890",
+	Resolver:           resolver,
 })
 if err != nil {
 	return err

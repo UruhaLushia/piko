@@ -18,22 +18,23 @@ const (
 const copyBufferSize = 1024 * 1024
 
 type Options struct {
-	Output       string
-	Connections  int
-	Retries      int
-	Force        bool
-	PartSize     int64
-	Timeout      time.Duration
-	StallTimeout time.Duration
-	UserAgent    string
-	Protocol     Protocol
-	Proxy        string
-	ProxyFunc    func(*http.Request) (*url.URL, error)
-	Resolver     Resolver
-	HTTPClient   *http.Client
-	HTTPClients  []*http.Client
-	Started      func(Result)
-	Progress     func(Progress)
+	Output             string
+	Connections        int
+	Retries            int
+	Force              bool
+	PartSize           int64
+	Timeout            time.Duration
+	StallTimeout       time.Duration
+	UserAgent          string
+	Protocol           Protocol
+	ConnectionStrategy ConnectionStrategy
+	Proxy              string
+	ProxyFunc          func(*http.Request) (*url.URL, error)
+	Resolver           Resolver
+	HTTPClient         *http.Client
+	HTTPClients        []*http.Client
+	Started            func(Result)
+	Progress           func(Progress)
 }
 
 type Progress struct {
