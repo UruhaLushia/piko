@@ -1,5 +1,7 @@
 # piko
 
+[简体中文](README.zh-CN.md)
+
 A small parallel downloader for CLI and Go programs.
 
 `piko` can save to a file, discard output for speed tests, or return downloaded bytes to your own code. It supports HTTP protocol selection, connection strategies, custom DNS resolvers, proxies, retries, and progress callbacks.
@@ -142,12 +144,6 @@ if err != nil {
 }
 
 result, err := client.Download(ctx, "https://example.com/file.pkg")
-```
-
-Import helper packages when needed:
-
-```go
-import "net/http"
 ```
 
 ## HTTP Client

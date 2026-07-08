@@ -10,7 +10,7 @@ on:
     paths-ignore:
       - "docs/**"
       - "examples/**"
-      - "README.md"
+      - "README*.md"
       - ".gitignore"
       - "LICENSE"
       - ".github/ISSUE_TEMPLATE/**"
