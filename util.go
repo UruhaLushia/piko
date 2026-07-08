@@ -31,6 +31,17 @@ func retryDelay(attempt int) time.Duration {
 	return delay
 }
 
+func rateLimitDelay(requeues int) time.Duration {
+	if requeues < 0 {
+		requeues = 0
+	}
+	delay := time.Duration(2*(1<<min(requeues, 4))) * time.Second
+	if delay > 30*time.Second {
+		return 30 * time.Second
+	}
+	return delay
+}
+
 func sleepWithContext(ctx context.Context, d time.Duration) error {
 	timer := time.NewTimer(d)
 	defer timer.Stop()

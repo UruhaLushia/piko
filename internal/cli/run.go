@@ -62,7 +62,7 @@ func run(ctx context.Context, rawURL string, opts cliOptions) error {
 		Resolver:           resolver,
 		Started: func(result piko.Result) {
 			if result.Parallel {
-				fmt.Fprintf(os.Stdout, "parallel download: %s (%s, %d connections, adaptive pieces up to %s)\n", result.Output, formatBytes(result.Size), result.Connections, formatBytes(result.PartSize))
+				fmt.Fprintf(os.Stdout, "parallel download: %s (%s, %d connections, adaptive pieces from %s)\n", result.Output, formatBytes(result.Size), result.Connections, formatBytes(result.PartSize))
 				return
 			}
 			fmt.Fprintf(os.Stdout, "single connection: %s\n", result.Output)
@@ -71,7 +71,7 @@ func run(ctx context.Context, rawURL string, opts cliOptions) error {
 	})
 	elapsed := time.Since(startedAt)
 	if err != nil {
-		printer.Done()
+		printer.Abort()
 		return fmt.Errorf("failed after %s: %w", formatDuration(elapsed), err)
 	}
 

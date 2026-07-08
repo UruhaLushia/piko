@@ -109,7 +109,21 @@ func (d *downloader) downloadPartsToWriter(ctx context.Context, writer io.Writer
 				if err != nil {
 					p.end = active.end.Load()
 					if ctx.Err() == nil && isRetryableDownloadError(err) {
-						if scheduler.requeue(p, offset, max(d.retries*4, 8)) {
+						rateLimited := isRateLimitedDownloadError(err)
+						maxRequeues := max(d.retries*4, 8)
+						delay := time.Duration(0)
+						if rateLimited {
+							maxRequeues = max(d.retries*16, 64)
+							delay = rateLimitDelay(p.requeues + 1)
+						} else {
+							scheduler.penalize(workerID)
+						}
+						if scheduler.requeue(p, offset, maxRequeues, delay) {
+							if delay > 0 {
+								if err := sleepWithContext(ctx, delay); err != nil {
+									return
+								}
+							}
 							continue
 						}
 						err = fmt.Errorf("part %d retry budget exhausted at byte %d: %w", p.index, offset, err)
@@ -210,6 +224,9 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 			}
 			lastErr = err
 			if !isRetryableDownloadError(err) {
+				return offset, err
+			}
+			if isRateLimitedDownloadError(err) {
 				return offset, err
 			}
 			if ctx.Err() == nil && (offset > attemptStart || attemptCtx.Err() != nil) {

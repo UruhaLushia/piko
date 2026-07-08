@@ -59,6 +59,19 @@ func (p *progressPrinter) Done() {
 	_ = p.bar.Finish()
 }
 
+func (p *progressPrinter) Abort() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.finished {
+		return
+	}
+	p.finished = true
+	if p.bar == nil {
+		return
+	}
+	_ = p.bar.Exit()
+}
+
 func (p *progressPrinter) Bytes() int64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()

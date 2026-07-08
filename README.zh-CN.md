@@ -70,7 +70,7 @@ piko --dns https://cloudflare-dns.com/dns-query https://example.com/file.pkg
 -f, --force                     覆盖输出文件
 -n, --connections <n>           并发连接数
     --retry <n>                 重试次数
--k, --part-size <size>          最大分段大小，例如 4MiB
+-s, --part-size <size>          初始分段大小，例如 4MiB
     --timeout <duration>        连接和响应头超时
     --stall-timeout <duration>  取消停滞的读取
     --http <auto|h1|h2|h2c>     HTTP 协议

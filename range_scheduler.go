@@ -9,7 +9,7 @@ import (
 
 const (
 	rangeLease         = 8 * time.Second
-	warmupPartSize     = 2 * 1024 * 1024
+	maxDynamicPartSize = 128 * 1024 * 1024
 	minDynamicPartSize = 512 * 1024
 	minTailPartSize    = 128 * 1024
 	minStealPartSize   = 64 * 1024
@@ -17,11 +17,13 @@ const (
 	idlePartPoll       = 50 * time.Millisecond
 	tailPartsPerConn   = 4
 	speedSmoothFactor  = 0.35
+	partSizeTargetTime = 8 * time.Second
 )
 
 type partScheduler struct {
-	maxPartSize int64
-	concurrency int
+	initialPartSize int64
+	maxPartSize     int64
+	concurrency     int
 
 	mu          sync.Mutex
 	front       int64
@@ -29,8 +31,15 @@ type partScheduler struct {
 	index       int
 	workerDone  []int
 	workerSpeed []float64
+	workerSize  []int64
 	queue       []part
+	delayed     []delayedPart
 	active      []*activePart
+}
+
+type delayedPart struct {
+	part      part
+	readyTime time.Time
 }
 
 type activePart struct {
@@ -69,20 +78,30 @@ func (p *activePart) cancelAttempt() {
 	}
 }
 
-func newPartScheduler(size int64, maxPartSize int64, concurrency int) *partScheduler {
-	if maxPartSize < 1 {
-		maxPartSize = DefaultPartSize
+func newPartScheduler(size int64, initialPartSize int64, concurrency int) *partScheduler {
+	if initialPartSize < 1 {
+		initialPartSize = DefaultPartSize
 	}
 	if concurrency < 1 {
 		concurrency = 1
 	}
+	maxPartSize := max(initialPartSize, min(int64(maxDynamicPartSize), initialPartSize*32))
+	if size > 0 {
+		maxPartSize = min(maxPartSize, size)
+	}
+	workerSize := make([]int64, concurrency)
+	for i := range workerSize {
+		workerSize[i] = initialPartSize
+	}
 	return &partScheduler{
-		maxPartSize: maxPartSize,
-		concurrency: concurrency,
-		back:        size - 1,
-		workerDone:  make([]int, concurrency),
-		workerSpeed: make([]float64, concurrency),
-		active:      make([]*activePart, concurrency),
+		initialPartSize: initialPartSize,
+		maxPartSize:     maxPartSize,
+		concurrency:     concurrency,
+		back:            size - 1,
+		workerDone:      make([]int, concurrency),
+		workerSpeed:     make([]float64, concurrency),
+		workerSize:      workerSize,
+		active:          make([]*activePart, concurrency),
 	}
 }
 
@@ -90,6 +109,7 @@ func (s *partScheduler) nextPart(workerID int) (part, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.moveReadyDelayedLocked()
 	if len(s.queue) > 0 {
 		last := len(s.queue) - 1
 		p := s.queue[last]
@@ -145,7 +165,8 @@ func (s *partScheduler) finish(workerID int, active *activePart) {
 func (s *partScheduler) hasInFlight() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.queue) > 0 || s.front <= s.back {
+	s.moveReadyDelayedLocked()
+	if len(s.queue) > 0 || len(s.delayed) > 0 || s.front <= s.back {
 		return true
 	}
 	for _, active := range s.active {
@@ -218,7 +239,7 @@ func (s *partScheduler) stealPartLocked(workerID int) (part, bool) {
 	return stolen, true
 }
 
-func (s *partScheduler) requeue(p part, offset int64, maxRequeues int) bool {
+func (s *partScheduler) requeue(p part, offset int64, maxRequeues int, delay time.Duration) bool {
 	if offset > p.end {
 		return false
 	}
@@ -234,7 +255,13 @@ func (s *partScheduler) requeue(p part, offset int64, maxRequeues int) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	chunkSize := s.maxPartSize >> p.requeues
+	if delay > 0 {
+		s.delayed = append(s.delayed, delayedPart{part: p, readyTime: time.Now().Add(delay)})
+		return true
+	}
+
+	chunkSize := p.length() >> 1
+	chunkSize = max(chunkSize, s.initialPartSize)
 	chunkSize = max(chunkSize, int64(minDynamicPartSize))
 	chunkSize = min(chunkSize, p.length())
 
@@ -248,6 +275,22 @@ func (s *partScheduler) requeue(p part, offset int64, maxRequeues int) bool {
 		s.queue = append(s.queue, chunks[i])
 	}
 	return true
+}
+
+func (s *partScheduler) moveReadyDelayedLocked() {
+	if len(s.delayed) == 0 {
+		return
+	}
+	now := time.Now()
+	pending := s.delayed[:0]
+	for _, delayed := range s.delayed {
+		if now.Before(delayed.readyTime) {
+			pending = append(pending, delayed)
+			continue
+		}
+		s.queue = append(s.queue, delayed.part)
+	}
+	s.delayed = pending
 }
 
 func (s *partScheduler) record(workerID int, bytes int64, elapsed time.Duration) {
@@ -264,7 +307,22 @@ func (s *partScheduler) record(workerID int, bytes int64, elapsed time.Duration)
 	} else {
 		s.workerSpeed[workerID] = s.workerSpeed[workerID]*(1-speedSmoothFactor) + speed*speedSmoothFactor
 	}
+	s.adjustPartSizeLocked(workerID, bytes, elapsed)
 	s.workerDone[workerID]++
+}
+
+func (s *partScheduler) penalize(workerID int) {
+	if workerID < 0 || workerID >= len(s.workerSize) {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current := s.workerSize[workerID]
+	if current <= 0 {
+		current = s.initialPartSize
+	}
+	s.workerSize[workerID] = max(current/2, int64(minDynamicPartSize))
 }
 
 func (s *partScheduler) nextPartSizeLocked(workerID int, remaining int64) int64 {
@@ -272,21 +330,41 @@ func (s *partScheduler) nextPartSizeLocked(workerID int, remaining int64) int64 
 }
 
 func (s *partScheduler) basePartSizeLocked(workerID int, remaining int64) int64 {
-	if workerID >= 0 && workerID < len(s.workerDone) && s.workerDone[workerID] == 0 {
-		return min(remaining, min(s.maxPartSize, int64(warmupPartSize)))
-	}
-
 	if remaining > s.tailWindow() {
-		return min(remaining, s.maxPartSize)
+		return min(remaining, s.workerPartSizeLocked(workerID))
 	}
 
 	targetParts := int64(s.concurrency) * tailPartsPerConn
 	partSize := (remaining + targetParts - 1) / targetParts
-	return clampPartSize(partSize, remaining, s.maxPartSize, minTailPartSize)
+	return clampPartSize(partSize, remaining, s.initialPartSize, minTailPartSize)
 }
 
 func (s *partScheduler) tailWindow() int64 {
-	return max(s.maxPartSize*8, int64(s.concurrency)*minDynamicPartSize*2)
+	return max(s.initialPartSize*8, int64(s.concurrency)*minDynamicPartSize*2)
+}
+
+func (s *partScheduler) workerPartSizeLocked(workerID int) int64 {
+	if workerID >= 0 && workerID < len(s.workerSize) && s.workerSize[workerID] > 0 {
+		return s.workerSize[workerID]
+	}
+	return s.initialPartSize
+}
+
+func (s *partScheduler) adjustPartSizeLocked(workerID int, bytes int64, elapsed time.Duration) {
+	if workerID < 0 || workerID >= len(s.workerSize) || bytes < min(s.initialPartSize, s.workerPartSizeLocked(workerID)/2) {
+		return
+	}
+	current := s.workerPartSizeLocked(workerID)
+	target := int64(float64(bytes) / elapsed.Seconds() * partSizeTargetTime.Seconds())
+	target = clampPartSize(target, s.maxPartSize, s.maxPartSize, minDynamicPartSize)
+	switch {
+	case target > current:
+		s.workerSize[workerID] = min(target, current*2)
+	case target < current/2:
+		s.workerSize[workerID] = max(target, current/2)
+	default:
+		s.workerSize[workerID] = (current + target) / 2
+	}
 }
 
 func clampPartSize(size int64, remaining int64, maxPartSize int64, minPartSize int64) int64 {
@@ -303,6 +381,9 @@ func clampPartSize(size int64, remaining int64, maxPartSize int64, minPartSize i
 
 func partLease(p part) time.Duration {
 	if p.requeues == 0 && p.length() > minDynamicPartSize {
+		return 0
+	}
+	if p.length() > DefaultPartSize*4 {
 		return 0
 	}
 

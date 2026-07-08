@@ -73,7 +73,7 @@ func NewRootCommand() *cobra.Command {
 	flags.BoolVarP(&opts.force, "force", "f", false, "overwrite output")
 	flags.IntVarP(&opts.connections, "connections", "n", opts.connections, "parallel connections")
 	flags.IntVar(&opts.retries, "retry", opts.retries, "retry count")
-	flags.StringVarP(&opts.partSize, "part-size", "k", opts.partSize, "max range part size")
+	flags.StringVarP(&opts.partSize, "part-size", "s", opts.partSize, "initial range part size")
 	flags.DurationVar(&opts.timeout, "timeout", opts.timeout, "dial/header timeout")
 	flags.DurationVar(&opts.stallTimeout, "stall-timeout", opts.stallTimeout, "cancel stalled reads")
 	flags.StringVar(&opts.protocol, "http", opts.protocol, "HTTP protocol: auto, h1, h2, h2c")

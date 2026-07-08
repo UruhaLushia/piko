@@ -71,3 +71,8 @@ func isRetryableDownloadError(err error) bool {
 	}
 	return true
 }
+
+func isRateLimitedDownloadError(err error) bool {
+	var statusErr httpStatusError
+	return errors.As(err, &statusErr) && statusErr.code == http.StatusTooManyRequests
+}

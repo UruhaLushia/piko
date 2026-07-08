@@ -70,7 +70,7 @@ Useful flags:
 -f, --force                     overwrite output
 -n, --connections <n>           parallel connections
     --retry <n>                 retry count
--k, --part-size <size>          max range part size, e.g. 4MiB
+-s, --part-size <size>          initial range part size, e.g. 4MiB
     --timeout <duration>        dial/header timeout
     --stall-timeout <duration>  cancel stalled reads
     --http <auto|h1|h2|h2c>     HTTP protocol

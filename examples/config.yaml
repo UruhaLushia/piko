@@ -8,6 +8,7 @@ download:
   force: false
   connections: 32
   retry: 3
+  # Initial range part size. piko adjusts later parts automatically.
   part-size: 4MiB
   timeout: 30s
   stall-timeout: 15s

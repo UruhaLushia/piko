@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -178,12 +179,7 @@ func expandHome(path string) string {
 
 func flagChanged(cmd *cobra.Command, names ...string) bool {
 	flags := cmd.Flags()
-	for _, name := range names {
-		if flags.Changed(name) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(names, flags.Changed)
 }
 
 func applyValue[T any](cmd *cobra.Command, flag string, target *T, value *T) {
