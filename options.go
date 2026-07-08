@@ -26,6 +26,7 @@ type Options struct {
 	Timeout            time.Duration
 	StallTimeout       time.Duration
 	UserAgent          string
+	Headers            http.Header
 	Protocol           Protocol
 	ConnectionStrategy ConnectionStrategy
 	Proxy              string

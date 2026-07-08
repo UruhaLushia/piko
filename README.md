@@ -32,6 +32,9 @@ piko -n 32 -o /dev/null https://example.com/file.pkg
 piko --http h2 https://example.com/file.pkg
 piko --http h1.1 https://example.com/file.pkg
 
+# Custom request headers
+piko -H "Authorization: Bearer token" -H "Accept: application/octet-stream" https://example.com/file.pkg
+
 # Spread parallel dials across resolved IPs
 piko -n 32 --connect-strategy round-robin https://example.com/file.pkg
 
@@ -59,6 +62,7 @@ Useful flags:
     --timeout <duration>        dial/header timeout
     --stall-timeout <duration>  cancel stalled reads
     --http <auto|h1|h2|h2c>     HTTP protocol
+-H, --header <header>           custom request header, repeatable
     --connect-strategy <mode>   IP strategy: sequential, round-robin, or fastest
     --proxy <url>               proxy URL, env, direct, or none
     --no-proxy                  disable proxy
@@ -117,6 +121,9 @@ if err != nil {
 client, err := piko.NewClient(piko.Options{
 	Connections:        16,
 	ConnectionStrategy: piko.ConnectionStrategyFastest,
+	Headers: http.Header{
+		"Authorization": {"Bearer token"},
+	},
 	Proxy:              "http://127.0.0.1:7890",
 	Resolver:           resolver,
 })
@@ -127,10 +134,14 @@ if err != nil {
 result, err := client.Download(ctx, "https://example.com/file.pkg")
 ```
 
-Import the DNS helper package when needed:
+Import helper packages when needed:
 
 ```go
-import "github.com/UruhaLushia/piko/dns"
+import (
+	"net/http"
+
+	"github.com/UruhaLushia/piko/dns"
+)
 ```
 
 ## HTTP Client

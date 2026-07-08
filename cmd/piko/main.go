@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -32,6 +33,7 @@ type cliOptions struct {
 	stallTimeout time.Duration
 	protocol     string
 	strategy     string
+	headers      []string
 	proxy        string
 	noProxy      bool
 	dns          string
@@ -92,6 +94,7 @@ func newRootCommand() *cobra.Command {
 	flags.StringVar(&opts.protocol, "http", opts.protocol, "HTTP protocol: auto, h1, h2, h2c")
 	flags.StringVar(&opts.strategy, "connect-strategy", opts.strategy, "IP connection strategy: sequential, round-robin, fastest")
 	flags.StringVar(&opts.strategy, "connection-strategy", opts.strategy, "IP connection strategy alias for --connect-strategy")
+	flags.StringArrayVarP(&opts.headers, "header", "H", nil, "custom request header, repeatable")
 	flags.StringVar(&opts.proxy, "proxy", "", "proxy URL, env, direct, or none")
 	flags.BoolVar(&opts.noProxy, "no-proxy", false, "disable proxy")
 	flags.StringVar(&opts.dns, "dns", "", "resolver: system, udp://1.1.1.1, dot://1.1.1.1, or https://.../dns-query")
@@ -114,6 +117,7 @@ func run(ctx context.Context, rawURL string, opts cliOptions) error {
 	if err != nil {
 		return err
 	}
+	headers := parseHeaders(opts.headers)
 	var resolver piko.Resolver
 	if opts.dns != "" {
 		resolver, err = dns.ParseResolver(opts.dns)
@@ -140,6 +144,7 @@ func run(ctx context.Context, rawURL string, opts cliOptions) error {
 		Timeout:            opts.timeout,
 		StallTimeout:       opts.stallTimeout,
 		UserAgent:          opts.userAgent,
+		Headers:            headers,
 		Protocol:           protocol,
 		ConnectionStrategy: strategy,
 		Proxy:              proxy,
@@ -171,6 +176,19 @@ func run(ctx context.Context, rawURL string, opts cliOptions) error {
 		fmt.Println("saved:", result.Output)
 	}
 	return nil
+}
+
+func parseHeaders(values []string) http.Header {
+	if len(values) == 0 {
+		return nil
+	}
+
+	headers := make(http.Header)
+	for _, value := range values {
+		name, headerValue, _ := strings.Cut(value, ":")
+		headers.Add(name, strings.TrimSpace(headerValue))
+	}
+	return headers
 }
 
 func parseSize(value string) (int64, error) {

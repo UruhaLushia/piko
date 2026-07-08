@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -14,6 +15,7 @@ type downloader struct {
 	clients      []*http.Client
 	url          string
 	ua           string
+	headers      http.Header
 	retries      int
 	stallTimeout time.Duration
 	progress     func(Progress)
@@ -49,6 +51,7 @@ func NewClient(opts Options) (*Client, error) {
 		client = clients[0]
 	}
 
+	opts.Headers = cloneHeader(opts.Headers)
 	return &Client{opts: opts, client: client, clients: clients}, nil
 }
 
@@ -87,6 +90,7 @@ func newDownloader(rawURL string, opts Options, client *http.Client, clients []*
 		clients:      clients,
 		url:          rawURL,
 		ua:           opts.UserAgent,
+		headers:      cloneHeader(opts.Headers),
 		retries:      opts.Retries,
 		stallTimeout: opts.StallTimeout,
 		progress:     opts.Progress,
@@ -101,6 +105,13 @@ func compactHTTPClients(clients []*http.Client) []*http.Client {
 		}
 	}
 	return compacted
+}
+
+func cloneHeader(header http.Header) http.Header {
+	if len(header) == 0 {
+		return nil
+	}
+	return header.Clone()
 }
 
 func (d *downloader) run(ctx context.Context, opts Options) (Result, error) {
@@ -185,4 +196,16 @@ func (d *downloader) plan(ctx context.Context, opts Options, allowDiscard bool) 
 func (d *downloader) setCommonHeaders(req *http.Request) {
 	req.Header.Set("User-Agent", d.ua)
 	req.Header.Set("Accept-Encoding", "identity")
+	for name, values := range d.headers {
+		if strings.EqualFold(name, "Host") {
+			if len(values) > 0 {
+				req.Host = values[len(values)-1]
+			}
+			continue
+		}
+		req.Header.Del(name)
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
 }
