@@ -35,7 +35,6 @@ type cliOptions struct {
 	strategy     string
 	headers      []string
 	proxy        string
-	noProxy      bool
 	dns          string
 	userAgent    string
 }
@@ -95,8 +94,7 @@ func newRootCommand() *cobra.Command {
 	flags.StringVar(&opts.strategy, "connect-strategy", opts.strategy, "IP connection strategy: sequential, round-robin, fastest")
 	flags.StringVar(&opts.strategy, "connection-strategy", opts.strategy, "IP connection strategy alias for --connect-strategy")
 	flags.StringArrayVarP(&opts.headers, "header", "H", nil, "custom request header, repeatable")
-	flags.StringVar(&opts.proxy, "proxy", "", "proxy URL, env, direct, or none")
-	flags.BoolVar(&opts.noProxy, "no-proxy", false, "disable proxy")
+	flags.StringVar(&opts.proxy, "proxy", "", "proxy URL, env, direct, or none (default direct)")
 	flags.StringVar(&opts.dns, "dns", "", "resolver: system, udp://1.1.1.1, dot://1.1.1.1, or https://.../dns-query")
 	flags.StringVar(&opts.dns, "resolver", "", "resolver alias for --dns")
 	flags.StringVar(&opts.userAgent, "ua", opts.userAgent, "user agent")
@@ -125,11 +123,6 @@ func run(ctx context.Context, rawURL string, opts cliOptions) error {
 			return err
 		}
 	}
-	proxy := opts.proxy
-	if opts.noProxy {
-		proxy = "direct"
-	}
-
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
 	defer stop()
 
@@ -147,7 +140,7 @@ func run(ctx context.Context, rawURL string, opts cliOptions) error {
 		Headers:            headers,
 		Protocol:           protocol,
 		ConnectionStrategy: strategy,
-		Proxy:              proxy,
+		Proxy:              opts.proxy,
 		Resolver:           resolver,
 		Started: func(result piko.Result) {
 			if result.Parallel {

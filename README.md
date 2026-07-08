@@ -43,7 +43,8 @@ piko -n 32 --connect-strategy fastest https://example.com/file.pkg
 
 # Proxy
 piko --proxy http://127.0.0.1:7890 https://example.com/file.pkg
-piko --no-proxy https://example.com/file.pkg
+piko --proxy env https://example.com/file.pkg
+piko --proxy direct https://example.com/file.pkg
 
 # Custom DNS
 piko --dns udp://1.1.1.1 https://example.com/file.pkg
@@ -64,8 +65,7 @@ Useful flags:
     --http <auto|h1|h2|h2c>     HTTP protocol
 -H, --header <header>           custom request header, repeatable
     --connect-strategy <mode>   IP strategy: sequential, round-robin, or fastest
-    --proxy <url>               proxy URL, env, direct, or none
-    --no-proxy                  disable proxy
+    --proxy <url>               proxy URL, env, direct, or none (default direct)
     --dns <resolver>            system, udp://, tcp://, dot://, or https:// DoH URL
     --ua <ua>                   user agent
 ```

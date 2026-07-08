@@ -120,10 +120,10 @@ func proxyFromOptions(opts HTTPOptions) (func(*http.Request) (*url.URL, error), 
 	}
 	proxy := strings.TrimSpace(opts.Proxy)
 	switch strings.ToLower(proxy) {
-	case "", "env", "environment":
-		return http.ProxyFromEnvironment, nil
-	case "direct", "none", "off":
+	case "", "direct", "none", "off":
 		return nil, nil
+	case "env", "environment":
+		return http.ProxyFromEnvironment, nil
 	}
 	proxyURL, err := parseProxyURL(proxy)
 	if err != nil {
