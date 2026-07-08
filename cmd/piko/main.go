@@ -291,6 +291,7 @@ func (p *progressPrinter) ensureBarLocked(total int64) {
 			progressbar.OptionSetWidth(progressBarWidth),
 			progressbar.OptionSetTheme(progressbar.ThemeASCII),
 			progressbar.OptionSetRenderBlankState(true),
+			progressbar.OptionUseANSICodes(true),
 			progressbar.OptionShowBytes(true),
 			progressbar.OptionShowTotalBytes(true),
 			progressbar.OptionShowCount(),
