@@ -181,7 +181,8 @@ func (d *downloader) plan(ctx context.Context, opts Options, allowDiscard bool) 
 	if !parallel {
 		connections = 1
 	} else {
-		maxUseful := max(int((info.size+minDynamicPartSize-1)/minDynamicPartSize), 1)
+		bytesPerConnection := max(opts.PartSize, int64(minBytesPerConnection))
+		maxUseful := max(int((info.size+bytesPerConnection-1)/bytesPerConnection), 1)
 		if connections > maxUseful {
 			connections = maxUseful
 		}

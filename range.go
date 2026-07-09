@@ -115,6 +115,9 @@ func (d *downloader) downloadPartsToWriter(ctx context.Context, writer io.Writer
 						if rateLimited {
 							maxRequeues = max(d.retries*16, 64)
 							delay = rateLimitDelay(p.requeues)
+							if p.end-offset+1 <= max(partSize, int64(minDynamicPartSize*2)) {
+								delay = 0
+							}
 						} else {
 							scheduler.penalize(workerID)
 						}

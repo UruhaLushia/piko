@@ -11,6 +11,7 @@ import (
 const (
 	rangeLease         = 8 * time.Second
 	maxDynamicPartSize = 1024 * 1024 * 1024
+	warmupPartSize     = 2 * 1024 * 1024
 	minDynamicPartSize = 512 * 1024
 	minTailPartSize    = 128 * 1024
 	minStealPartSize   = 64 * 1024
@@ -331,6 +332,10 @@ func (s *partScheduler) nextPartSizeLocked(workerID int, remaining int64) int64 
 }
 
 func (s *partScheduler) basePartSizeLocked(workerID int, remaining int64) int64 {
+	if workerID >= 0 && workerID < len(s.workerDone) && s.workerDone[workerID] == 0 {
+		return min(remaining, min(s.maxPartSize, int64(warmupPartSize)))
+	}
+
 	if remaining > s.tailWindow() {
 		return min(remaining, s.workerPartSizeLocked(workerID))
 	}
@@ -341,7 +346,7 @@ func (s *partScheduler) basePartSizeLocked(workerID int, remaining int64) int64 
 }
 
 func (s *partScheduler) tailWindow() int64 {
-	return max(s.initialPartSize*8, int64(s.concurrency)*minDynamicPartSize*2)
+	return max(s.initialPartSize*16, int64(s.concurrency)*s.initialPartSize)
 }
 
 func (s *partScheduler) workerPartSizeLocked(workerID int) int64 {
