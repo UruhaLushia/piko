@@ -18,7 +18,7 @@ const (
 	tailPartsPerConn   = 4
 	speedSmoothFactor  = 0.35
 	partSizeTargetTime = 16 * time.Second
-	minLeasedPartSpeed = 512 * 1024
+	minLeasedPartSpeed = 256 * 1024
 )
 
 type partScheduler struct {
