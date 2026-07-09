@@ -33,6 +33,7 @@ func (d *downloader) downloadParts(ctx context.Context, output string, size int6
 	partPath := ""
 	var writer io.WriterAt = discardWriterAt{}
 	var file *os.File
+	var asyncWriter *asyncFileWriterAt
 	if !discard {
 		partPath = output + ".part"
 		if err := prepareTemp(partPath); err != nil {
@@ -49,10 +50,16 @@ func (d *downloader) downloadParts(ctx context.Context, output string, size int6
 			_ = os.Remove(partPath)
 			return err
 		}
-		writer = file
+		asyncWriter = newAsyncFileWriterAt(file)
+		writer = asyncWriter
 	}
 
 	err := d.downloadPartsToWriter(ctx, writer, size, partSize, concurrency)
+	if asyncWriter != nil {
+		if writeErr := asyncWriter.Close(); err == nil {
+			err = writeErr
+		}
+	}
 	if closeErr := closeFile(file); err == nil {
 		err = closeErr
 	}
@@ -168,7 +175,6 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 		active.offset.Store(offset)
 
 		attemptCtx, attemptCancel := context.WithCancel(ctx)
-		cancelID := active.setCancel(attemptCancel)
 		connInfo := &rangeConnection{}
 		attemptCtx = httptrace.WithClientTrace(attemptCtx, &httptrace.ClientTrace{
 			GotConn: func(info httptrace.GotConnInfo) {
@@ -180,7 +186,6 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 		})
 		finishAttempt := func() {
 			attemptCancel()
-			active.clearCancel(cancelID)
 		}
 		req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, d.url, nil)
 		if err != nil {
@@ -211,6 +216,13 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 			}
 		} else {
 			err = d.copyRange(attemptCtx, attemptCancel, writer, resp, p.index, attemptStart, end, &offset, active, partLease(p), connInfo.conn)
+			closeRange := shouldCloseRangeConnection(err, offset, end, active.end.Load())
+			if closeRange {
+				attemptCancel()
+				if connInfo.conn != nil {
+					_ = connInfo.conn.Close()
+				}
+			}
 			resp.Body.Close()
 			d.recordIPAttempt(connInfo.key, offset-attemptStart, time.Since(attemptStarted), err)
 			finishAttempt()
@@ -241,6 +253,13 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 	return offset, fmt.Errorf("part %d failed at byte %d: %w", p.index, offset, lastErr)
 }
 
+func shouldCloseRangeConnection(err error, offset int64, requestEnd int64, activeEnd int64) bool {
+	if err != nil {
+		return true
+	}
+	return activeEnd < requestEnd || offset <= requestEnd
+}
+
 func (d *downloader) copyRange(ctx context.Context, cancel context.CancelFunc, writer io.WriterAt, resp *http.Response, partIndex int, requestStart int64, requestEnd int64, offset *int64, active *activePart, lease time.Duration, conn net.Conn) error {
 	if resp.StatusCode != http.StatusPartialContent {
 		return httpStatusError{partIndex: partIndex, code: resp.StatusCode, status: resp.Status}
@@ -249,7 +268,34 @@ func (d *downloader) copyRange(ctx context.Context, cancel context.CancelFunc, w
 		return err
 	}
 
-	buf := make([]byte, copyBufferSize)
+	buffered := shouldBufferRangeWrite(writer, requestEnd-requestStart+1)
+	return d.copyRangeBody(ctx, cancel, writer, resp.Body, requestStart, offset, active, lease, conn, buffered)
+}
+
+func shouldBufferRangeWrite(writer io.WriterAt, size int64) bool {
+	if size > maxBufferedRangeSize {
+		return false
+	}
+	switch writer.(type) {
+	case discardWriterAt, byteSliceWriterAt:
+		return false
+	default:
+		return true
+	}
+}
+
+func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFunc, writer io.WriterAt, reader io.Reader, requestStart int64, offset *int64, active *activePart, lease time.Duration, conn net.Conn, buffered bool) error {
+	state := rangeWriteState{
+		d:        d,
+		writer:   writer,
+		active:   active,
+		offset:   offset,
+		buffered: buffered,
+	}
+	if buffered {
+		state.buffer = make([]byte, 0, int(min(active.part.length(), int64(maxBufferedRangeSize))))
+	}
+	buf := make([]byte, rangeWriteBufferSize)
 	progress := d.startStallMonitor(cancel)
 	if progress != nil {
 		defer close(progress)
@@ -266,42 +312,33 @@ func (d *downloader) copyRange(ctx context.Context, cancel context.CancelFunc, w
 
 	for {
 		if err := ctx.Err(); err != nil {
-			return err
+			return state.finish(err)
 		}
 
 		end := active.end.Load()
 		if *offset > end {
-			return nil
+			return state.flush()
 		}
 		readSize := min(int64(len(buf)), end-*offset+1)
-		n, readErr := resp.Body.Read(buf[:int(readSize)])
+		n, readErr := reader.Read(buf[:int(readSize)])
 		if n > 0 {
-			active.mu.Lock()
-			end = active.end.Load()
-			if *offset > end {
-				active.mu.Unlock()
-				return nil
+			if progress != nil {
+				select {
+				case progress <- struct{}{}:
+				default:
+				}
 			}
-			writeSize := min(int64(n), end-*offset+1)
-			written, writeErr := writer.WriteAt(buf[:int(writeSize)], *offset)
+			writeSize, writeErr := state.write(buf[:n])
 			if writeErr != nil {
-				active.mu.Unlock()
 				return writeErr
 			}
-			if int64(written) != writeSize {
-				active.mu.Unlock()
-				return io.ErrShortWrite
-			}
-			*offset += writeSize
-			active.offset.Store(*offset)
-			active.mu.Unlock()
 			if writeSize > 0 {
-				d.addProgress(writeSize, 0)
 				now := time.Now()
 				if now.Sub(lastCheck) >= slowConnectionCheckInterval {
 					speed := float64(*offset-lastOffset) / now.Sub(lastCheck).Seconds()
 					avg, peers := d.updateRangeSpeed(speedID, speed)
-					if shouldCloseSlowConnection(speed, avg, peers, now.Sub(started), *offset-requestStart) {
+					remaining := active.end.Load() - *offset + 1
+					if shouldCloseSlowConnection(speed, avg, peers, now.Sub(started), *offset-requestStart, remaining) {
 						slowStrikes++
 					} else {
 						slowStrikes = 0
@@ -313,31 +350,96 @@ func (d *downloader) copyRange(ctx context.Context, cancel context.CancelFunc, w
 							_ = conn.Close()
 						}
 						cancel()
-						return errSlowConnection
+						return state.finish(errSlowConnection)
 					}
 				}
 			}
-			if progress != nil {
-				select {
-				case progress <- struct{}{}:
-				default:
-				}
-			}
 			if writeSize < int64(n) {
-				return nil
+				return state.flush()
 			}
 		}
 
 		if readErr == io.EOF {
 			if *offset > active.end.Load() {
-				return nil
+				return state.flush()
 			}
-			return io.ErrUnexpectedEOF
+			return state.finish(io.ErrUnexpectedEOF)
 		}
 		if readErr != nil {
-			return readErr
+			if *offset > end {
+				return state.flush()
+			}
+			return state.finish(readErr)
 		}
 	}
+}
+
+type rangeWriteState struct {
+	d           *downloader
+	writer      io.WriterAt
+	active      *activePart
+	offset      *int64
+	buffered    bool
+	bufferStart int64
+	buffer      []byte
+}
+
+func (s *rangeWriteState) write(data []byte) (int64, error) {
+	s.active.mu.Lock()
+	defer s.active.mu.Unlock()
+
+	end := s.active.end.Load()
+	if *s.offset > end {
+		return 0, nil
+	}
+	writeSize := min(int64(len(data)), end-*s.offset+1)
+	if writeSize <= 0 {
+		return 0, nil
+	}
+	if s.buffered {
+		if len(s.buffer) == 0 {
+			s.bufferStart = *s.offset
+		}
+		s.buffer = append(s.buffer, data[:int(writeSize)]...)
+		*s.offset += writeSize
+		s.active.offset.Store(*s.offset)
+		return writeSize, nil
+	}
+
+	written, err := s.writer.WriteAt(data[:int(writeSize)], *s.offset)
+	if err != nil {
+		return 0, err
+	}
+	if int64(written) != writeSize {
+		return 0, io.ErrShortWrite
+	}
+	*s.offset += writeSize
+	s.active.offset.Store(*s.offset)
+	s.d.addProgress(writeSize, 0)
+	return writeSize, nil
+}
+
+func (s *rangeWriteState) finish(err error) error {
+	if flushErr := s.flush(); flushErr != nil {
+		return flushErr
+	}
+	return err
+}
+
+func (s *rangeWriteState) flush() error {
+	if len(s.buffer) == 0 {
+		return nil
+	}
+	written, err := s.writer.WriteAt(s.buffer, s.bufferStart)
+	if err != nil {
+		return err
+	}
+	if written != len(s.buffer) {
+		return io.ErrShortWrite
+	}
+	s.d.addProgress(int64(len(s.buffer)), 0)
+	s.buffer = s.buffer[:0]
+	return nil
 }
 
 func (d *downloader) recordIPAttempt(key string, bytes int64, elapsed time.Duration, err error) {
@@ -346,13 +448,21 @@ func (d *downloader) recordIPAttempt(key string, bytes int64, elapsed time.Durat
 	}
 }
 
-func shouldCloseSlowConnection(speed float64, avg float64, peers int, age time.Duration, bytes int64) bool {
-	return peers >= slowConnectionMinPeers &&
+func shouldCloseSlowConnection(speed float64, avg float64, peers int, age time.Duration, bytes int64, remaining int64) bool {
+	if peers >= slowConnectionMinPeers &&
 		age >= slowConnectionMinAge &&
 		bytes >= slowConnectionMinBytes &&
 		avg > 0 &&
 		speed > 0 &&
-		speed < avg*slowConnectionRatio
+		speed < avg*slowConnectionRatio {
+		return true
+	}
+	return remaining > 0 &&
+		remaining <= slowTailWindow &&
+		age >= slowTailMinAge &&
+		bytes >= slowTailMinBytes &&
+		speed > 0 &&
+		speed < minLeasedPartSpeed
 }
 
 type discardWriterAt struct{}

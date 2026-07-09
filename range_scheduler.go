@@ -14,12 +14,11 @@ const (
 	warmupPartSize     = 2 * 1024 * 1024
 	minDynamicPartSize = 512 * 1024
 	minTailPartSize    = 128 * 1024
-	minStealPartSize   = 64 * 1024
-	minStealAge        = 200 * time.Millisecond
 	idlePartPoll       = 50 * time.Millisecond
 	tailPartsPerConn   = 4
 	speedSmoothFactor  = 0.35
 	partSizeTargetTime = 16 * time.Second
+	minLeasedPartSpeed = 512 * 1024
 )
 
 type partScheduler struct {
@@ -45,39 +44,11 @@ type delayedPart struct {
 }
 
 type activePart struct {
-	mu       sync.Mutex
-	cancelMu sync.Mutex
-	part     part
-	started  time.Time
-	offset   atomic.Int64
-	end      atomic.Int64
-	cancel   context.CancelFunc
-	cancelID int64
-}
-
-func (p *activePart) setCancel(cancel context.CancelFunc) int64 {
-	p.cancelMu.Lock()
-	defer p.cancelMu.Unlock()
-	p.cancelID++
-	p.cancel = cancel
-	return p.cancelID
-}
-
-func (p *activePart) clearCancel(id int64) {
-	p.cancelMu.Lock()
-	defer p.cancelMu.Unlock()
-	if p.cancelID == id {
-		p.cancel = nil
-	}
-}
-
-func (p *activePart) cancelAttempt() {
-	p.cancelMu.Lock()
-	cancel := p.cancel
-	p.cancelMu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
+	mu      sync.Mutex
+	part    part
+	started time.Time
+	offset  atomic.Int64
+	end     atomic.Int64
 }
 
 func newPartScheduler(size int64, initialPartSize int64, concurrency int) *partScheduler {
@@ -122,7 +93,7 @@ func (s *partScheduler) nextPart(workerID int) (part, bool) {
 	}
 
 	if s.front > s.back {
-		return s.stealPartLocked(workerID)
+		return part{}, false
 	}
 
 	remaining := s.back - s.front + 1
@@ -177,68 +148,6 @@ func (s *partScheduler) hasInFlight() bool {
 		}
 	}
 	return false
-}
-
-func (s *partScheduler) stealPartLocked(workerID int) (part, bool) {
-	var chosen *activePart
-	var chosenRemaining int64
-
-	now := time.Now()
-	for id, active := range s.active {
-		if id == workerID || active == nil {
-			continue
-		}
-		if now.Sub(active.started) < minStealAge {
-			continue
-		}
-
-		active.mu.Lock()
-		end := active.end.Load()
-		start := active.offset.Load()
-		remaining := end - start + 1
-		active.mu.Unlock()
-		if remaining < minStealPartSize {
-			continue
-		}
-		if remaining > chosenRemaining {
-			chosen = active
-			chosenRemaining = remaining
-		}
-	}
-	if chosen == nil {
-		return part{}, false
-	}
-
-	chosen.mu.Lock()
-	defer chosen.mu.Unlock()
-
-	oldEnd := chosen.end.Load()
-	start := chosen.offset.Load()
-	remaining := oldEnd - start + 1
-	if remaining < minStealPartSize {
-		return part{}, false
-	}
-
-	stolen := part{
-		requeues: chosen.part.requeues + 1,
-		end:      oldEnd,
-	}
-	handoff := remaining < minStealPartSize*2
-	if handoff {
-		chosen.end.Store(start - 1)
-		stolen.start = start
-	} else {
-		splitStart := start + remaining/2
-		chosen.end.Store(splitStart - 1)
-		stolen.start = splitStart
-	}
-
-	s.index++
-	stolen.index = s.index
-	if handoff {
-		chosen.cancelAttempt()
-	}
-	return stolen, true
 }
 
 func (s *partScheduler) requeue(p part, offset int64, maxRequeues int, delay time.Duration) bool {
@@ -390,7 +299,7 @@ func clampPartSize(size int64, remaining int64, maxPartSize int64, minPartSize i
 }
 
 func partLease(p part) time.Duration {
-	if p.requeues == 0 && p.length() > minDynamicPartSize {
+	if p.requeues == 0 && p.length() > slowTailWindow {
 		return 0
 	}
 	if p.length() > DefaultPartSize*4 {
@@ -398,6 +307,9 @@ func partLease(p part) time.Duration {
 	}
 
 	lease := rangeLease
+	if p.length() <= slowTailWindow {
+		lease = time.Duration(p.length()*int64(time.Second)) / minLeasedPartSpeed
+	}
 	if p.length() <= minDynamicPartSize {
 		lease = rangeLease / 2
 	}

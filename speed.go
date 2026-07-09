@@ -12,6 +12,9 @@ const (
 	slowConnectionRatio         = 0.45
 	slowConnectionStrikes       = 2
 	slowConnectionMinPeers      = 4
+	slowTailWindow              = 2 * 1024 * 1024
+	slowTailMinAge              = 4 * time.Second
+	slowTailMinBytes            = 256 * 1024
 )
 
 var errSlowConnection = errors.New("slow connection")
