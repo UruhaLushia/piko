@@ -7,14 +7,49 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"sync"
 	"time"
 
 	"github.com/UruhaLushia/piko/internal/dialer"
 )
 
 type rangeConnection struct {
-	conn net.Conn
-	key  string
+	mu     sync.Mutex
+	conn   net.Conn
+	key    string
+	closed bool
+}
+
+func (c *rangeConnection) set(conn net.Conn) {
+	key := ""
+	if conn != nil {
+		key = dialer.RemoteAddrIPKey(conn.RemoteAddr())
+	}
+
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		closeConn(conn)
+		return
+	}
+	c.conn = conn
+	c.key = key
+	c.mu.Unlock()
+}
+
+func (c *rangeConnection) snapshot() (net.Conn, string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conn, c.key
+}
+
+func (c *rangeConnection) close() {
+	c.mu.Lock()
+	c.closed = true
+	conn := c.conn
+	c.conn = nil
+	c.mu.Unlock()
+	closeConn(conn)
 }
 
 func closeConn(conn net.Conn) {
@@ -38,14 +73,15 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 		active.offset.Store(offset)
 
 		attemptCtx, attemptCancel := context.WithCancel(ctx)
-		probeTimer := newRateProbeTimer(probeIdleTimeout, attemptCancel)
 		connInfo := &rangeConnection{}
+		abortAttempt := func() {
+			attemptCancel()
+			connInfo.close()
+		}
+		probeTimer := newIdleTimer(probeIdleTimeout, abortAttempt)
 		attemptCtx = httptrace.WithClientTrace(attemptCtx, &httptrace.ClientTrace{
 			GotConn: func(info httptrace.GotConnInfo) {
-				connInfo.conn = info.Conn
-				if info.Conn != nil {
-					connInfo.key = dialer.RemoteAddrIPKey(info.Conn.RemoteAddr())
-				}
+				connInfo.set(info.Conn)
 			},
 		})
 		finishAttempt := func() {
@@ -64,15 +100,16 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 		attemptStarted := time.Now()
 		resp, err := client.Do(req)
 		probeTimer.stop()
+		conn, connKey := connInfo.snapshot()
 		if err != nil {
 			if probeTimer.expired() && ctx.Err() == nil {
-				closeConn(connInfo.conn)
 				err = errRateProbeTimeout
 			}
+			connInfo.close()
 			if resp != nil {
 				resp.Body.Close()
 			}
-			d.recordIPAttempt(connInfo.key, offset-attemptStart, time.Since(attemptStarted), err)
+			d.recordIPAttempt(connKey, offset-attemptStart, time.Since(attemptStarted), err)
 			attemptCanceled := attemptCtx.Err() != nil
 			finishAttempt()
 			if offset > active.end.Load() {
@@ -86,14 +123,13 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 				return offset, err
 			}
 		} else {
-			err = d.copyRange(attemptCtx, attemptCancel, writer, resp, p.index, attemptStart, end, &offset, active, partLease(p), connInfo.conn, probeIdleTimeout)
+			err = d.copyRange(attemptCtx, attemptCancel, writer, resp, p.index, attemptStart, end, &offset, active, partLease(p), conn, probeIdleTimeout)
 			attemptCanceled := attemptCtx.Err() != nil
 			if shouldCloseRangeConnection(err, offset, end, active.end.Load()) {
-				attemptCancel()
-				closeConn(connInfo.conn)
+				abortAttempt()
 			}
 			resp.Body.Close()
-			d.recordIPAttempt(connInfo.key, offset-attemptStart, time.Since(attemptStarted), err)
+			d.recordIPAttempt(connKey, offset-attemptStart, time.Since(attemptStarted), err)
 			finishAttempt()
 			if err == nil {
 				return offset, nil

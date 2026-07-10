@@ -1,7 +1,6 @@
 package piko
 
 import (
-	"context"
 	"sync/atomic"
 	"time"
 )
@@ -48,16 +47,16 @@ func (p part) probeIdleTimeout() time.Duration {
 	return rateLimitIdle
 }
 
-type rateProbeTimer struct {
+type idleTimer struct {
 	timer    *time.Timer
 	timedOut atomic.Bool
 }
 
-func newRateProbeTimer(timeout time.Duration, onTimeout func()) *rateProbeTimer {
+func newIdleTimer(timeout time.Duration, onTimeout func()) *idleTimer {
 	if timeout <= 0 {
 		return nil
 	}
-	probe := &rateProbeTimer{}
+	probe := &idleTimer{}
 	probe.timer = time.AfterFunc(timeout, func() {
 		probe.timedOut.Store(true)
 		onTimeout()
@@ -65,19 +64,19 @@ func newRateProbeTimer(timeout time.Duration, onTimeout func()) *rateProbeTimer 
 	return probe
 }
 
-func (p *rateProbeTimer) stop() {
+func (p *idleTimer) stop() {
 	if p != nil {
 		p.timer.Stop()
 	}
 }
 
-func (p *rateProbeTimer) reset(timeout time.Duration) {
+func (p *idleTimer) reset(timeout time.Duration) {
 	if p != nil {
 		resetTimer(p.timer, timeout)
 	}
 }
 
-func (p *rateProbeTimer) expired() bool {
+func (p *idleTimer) expired() bool {
 	return p != nil && p.timedOut.Load()
 }
 
@@ -105,7 +104,7 @@ func partLease(p part) time.Duration {
 	return lease
 }
 
-func startLeaseMonitor(cancel context.CancelFunc, lease time.Duration) func() {
+func startLeaseMonitor(cancel func(), lease time.Duration) func() {
 	if lease <= 0 {
 		return func() {}
 	}

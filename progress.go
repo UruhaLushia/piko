@@ -1,11 +1,8 @@
 package piko
 
-import (
-	"context"
-	"time"
-)
+import "time"
 
-func (d *downloader) startStallMonitor(cancel context.CancelFunc) chan<- struct{} {
+func (d *downloader) startStallMonitor(cancel func()) chan<- struct{} {
 	if d.stallTimeout <= 0 {
 		return nil
 	}

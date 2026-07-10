@@ -12,6 +12,7 @@ const (
 	slowTailWindow              = 2 * 1024 * 1024
 	slowTailMinAge              = 4 * time.Second
 	slowTailMinBytes            = 256 * 1024
+	slowTailIdleTimeout         = time.Second
 )
 
 func (d *downloader) registerRangeSpeed() int64 {

@@ -51,17 +51,20 @@ func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFun
 		state.buffer = make([]byte, 0, int(min(active.part.length(), int64(maxBufferedRangeSize))))
 	}
 	buf := make([]byte, rangeWriteBufferSize)
-	progress := d.startStallMonitor(cancel)
+	abort := func() {
+		cancel()
+		closeConn(conn)
+	}
+	progress := d.startStallMonitor(abort)
 	if progress != nil {
 		defer close(progress)
 	}
-	stopLease := startLeaseMonitor(cancel, lease)
+	stopLease := startLeaseMonitor(abort, lease)
 	defer stopLease()
-	probeTimer := newRateProbeTimer(probeIdleTimeout, func() {
-		cancel()
-		closeConn(conn)
-	})
+	probeTimer := newIdleTimer(probeIdleTimeout, abort)
 	defer probeTimer.stop()
+	var tailTimer *idleTimer
+	defer func() { tailTimer.stop() }()
 
 	speedID := d.registerRangeSpeed()
 	defer d.unregisterRangeSpeed(speedID)
@@ -82,10 +85,14 @@ func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFun
 		if *offset > end {
 			return state.flush()
 		}
+		if probeIdleTimeout <= 0 && tailTimer == nil && end-*offset+1 <= slowTailWindow {
+			tailTimer = newIdleTimer(slowTailIdleTimeout, abort)
+		}
 		readSize := min(int64(len(buf)), end-*offset+1)
 		n, readErr := reader.Read(buf[:int(readSize)])
 		if n > 0 {
 			probeTimer.reset(probeIdleTimeout)
+			tailTimer.reset(slowTailIdleTimeout)
 			if progress != nil {
 				select {
 				case progress <- struct{}{}:
@@ -110,8 +117,7 @@ func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFun
 					lastCheck = now
 					lastOffset = *offset
 					if slowStrikes >= slowConnectionStrikes {
-						closeConn(conn)
-						cancel()
+						abort()
 						return state.finish(dialer.ErrSlowConnection)
 					}
 				}
