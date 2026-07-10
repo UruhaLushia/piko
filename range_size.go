@@ -13,14 +13,13 @@ const (
 	rateLimitedPartMin = 32 * 1024 * 1024
 )
 
-func (s *partScheduler) record(workerID int, probeID int, bytes int64, elapsed time.Duration) {
+func (s *partScheduler) record(workerID int, bytes int64, elapsed time.Duration) {
 	if workerID < 0 || workerID >= len(s.workerSize) || bytes <= 0 || elapsed <= 0 {
 		return
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.recordConcurrencyProbeLocked(workerID, probeID)
 	s.adjustPartSizeLocked(workerID, bytes, elapsed)
 	s.updatePartSizeHintLocked(s.workerPartSizeLocked(workerID))
 	s.workerDone[workerID]++
@@ -41,8 +40,8 @@ func (s *partScheduler) penalize(workerID int) {
 }
 
 func (s *partScheduler) basePartSizeLocked(workerID int, remaining int64) int64 {
-	if s.probe.active() {
-		return min(remaining, min(s.maxPartSize, int64(concurrencyProbePartSize)))
+	if s.probe.workerPending(workerID) {
+		return min(remaining, min(s.maxPartSize, min(s.initialPartSize, int64(warmupPartSize))))
 	}
 	if s.shouldWarmupLocked(workerID) {
 		return min(remaining, min(s.maxPartSize, int64(warmupPartSize)))

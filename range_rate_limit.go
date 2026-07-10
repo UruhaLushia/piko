@@ -28,7 +28,7 @@ func (s *partScheduler) limitForRateLimit(delay time.Duration) {
 	s.limitedAt = now
 	s.limitStrikes++
 	if probing {
-		s.backoffConcurrencyLocked()
+		s.limitConcurrencyProbeLocked()
 		s.clearRateProbeLocked()
 		s.limitBackoffAt = now
 		s.limitStrikes = 0
@@ -80,8 +80,7 @@ func (s *partScheduler) rejectRateProbe(delay time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.probe.active() {
-		s.stopConcurrencyProbeLocked()
-		s.backoffConcurrencyLocked()
+		s.limitConcurrencyProbeLocked()
 		s.rateLimited = true
 	} else if s.probeLimit == s.maxActive && s.maxActive > minimumActiveConnections {
 		s.maxActive--

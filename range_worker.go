@@ -64,7 +64,13 @@ func (d *downloader) runPartWorker(ctx context.Context, scheduler *partScheduler
 
 		p := active.part
 		started := time.Now()
-		offset, err := d.downloadRange(ctx, client, writer, active, p.probeIdleTimeout())
+		var confirmProbe func()
+		if p.concurrencyProbe {
+			confirmProbe = func() {
+				scheduler.confirmConcurrencyProbe(workerID, active.probeID)
+			}
+		}
+		offset, err := d.downloadRange(ctx, client, writer, active, p.probeIdleTimeout(), confirmProbe)
 		scheduler.finish(workerID, active)
 		if err != nil {
 			p.end = active.end.Load()
@@ -79,6 +85,6 @@ func (d *downloader) runPartWorker(ctx context.Context, scheduler *partScheduler
 		}
 
 		scheduler.confirmRateProbe(p)
-		scheduler.record(workerID, active.probeID, max(offset-p.start, 0), time.Since(started))
+		scheduler.record(workerID, max(offset-p.start, 0), time.Since(started))
 	}
 }

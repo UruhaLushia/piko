@@ -15,7 +15,7 @@ const (
 	maxBufferedRangeSize = 512 * 1024
 )
 
-func (d *downloader) copyRange(ctx context.Context, cancel context.CancelFunc, writer io.WriterAt, resp *http.Response, partIndex int, requestStart int64, requestEnd int64, offset *int64, active *activePart, lease time.Duration, conn net.Conn, probeIdleTimeout time.Duration) error {
+func (d *downloader) copyRange(ctx context.Context, cancel context.CancelFunc, writer io.WriterAt, resp *http.Response, partIndex int, requestStart int64, requestEnd int64, offset *int64, active *activePart, lease time.Duration, conn net.Conn, probeIdleTimeout time.Duration, confirmProbe func()) error {
 	if resp.StatusCode != http.StatusPartialContent {
 		return httpStatusError{partIndex: partIndex, code: resp.StatusCode, status: resp.Status}
 	}
@@ -24,7 +24,7 @@ func (d *downloader) copyRange(ctx context.Context, cancel context.CancelFunc, w
 	}
 
 	buffered := shouldBufferRangeWrite(writer, requestEnd-requestStart+1)
-	return d.copyRangeBody(ctx, cancel, writer, resp.Body, requestStart, offset, active, lease, conn, buffered, probeIdleTimeout)
+	return d.copyRangeBody(ctx, cancel, writer, resp.Body, requestStart, offset, active, lease, conn, buffered, probeIdleTimeout, confirmProbe)
 }
 
 func shouldBufferRangeWrite(writer io.WriterAt, size int64) bool {
@@ -39,7 +39,7 @@ func shouldBufferRangeWrite(writer io.WriterAt, size int64) bool {
 	}
 }
 
-func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFunc, writer io.WriterAt, reader io.Reader, requestStart int64, offset *int64, active *activePart, lease time.Duration, conn net.Conn, buffered bool, probeIdleTimeout time.Duration) error {
+func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFunc, writer io.WriterAt, reader io.Reader, requestStart int64, offset *int64, active *activePart, lease time.Duration, conn net.Conn, buffered bool, probeIdleTimeout time.Duration, confirmProbe func()) error {
 	state := rangeWriteState{
 		d:        d,
 		writer:   writer,
@@ -72,6 +72,7 @@ func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFun
 	lastCheck := started
 	lastOffset := *offset
 	slowStrikes := 0
+	probeConfirmed := false
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -102,6 +103,10 @@ func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFun
 			writeSize, writeErr := state.write(buf[:n])
 			if writeErr != nil {
 				return writeErr
+			}
+			if *offset-requestStart >= concurrencyProbeConfirm && !probeConfirmed && confirmProbe != nil {
+				confirmProbe()
+				probeConfirmed = true
 			}
 			if writeSize > 0 {
 				now := time.Now()

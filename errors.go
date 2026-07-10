@@ -29,7 +29,10 @@ type contentRangeError struct {
 	expected  string
 }
 
-var errRateProbeTimeout = errors.New("rate probe timeout")
+var (
+	errRateProbeTimeout       = errors.New("rate probe timeout")
+	errConcurrencyProbeClosed = errors.New("concurrency probe connection closed")
+)
 
 func (e contentRangeError) Error() string {
 	return fmt.Sprintf("part %d invalid Content-Range %q, expected %s", e.partIndex, e.value, e.expected)

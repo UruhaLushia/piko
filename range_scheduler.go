@@ -1,6 +1,7 @@
 package piko
 
 import (
+	"net"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -14,11 +15,12 @@ const (
 )
 
 type part struct {
-	index     int
-	start     int64
-	end       int64
-	requeues  int
-	rateProbe bool
+	index            int
+	start            int64
+	end              int64
+	requeues         int
+	rateProbe        bool
+	concurrencyProbe bool
 }
 
 func (p part) length() int64 {
@@ -57,12 +59,15 @@ type delayedPart struct {
 }
 
 type activePart struct {
-	mu      sync.Mutex
-	part    part
-	started time.Time
-	probeID int
-	offset  atomic.Int64
-	end     atomic.Int64
+	mu             sync.Mutex
+	part           part
+	started        time.Time
+	probeID        int
+	offset         atomic.Int64
+	end            atomic.Int64
+	connMu         sync.Mutex
+	conn           net.Conn
+	closeRequested bool
 }
 
 func newPartScheduler(size int64, initialPartSize int64, concurrency int) *partScheduler {
@@ -81,7 +86,7 @@ func newPartScheduler(size int64, initialPartSize int64, concurrency int) *partS
 		workerSize[i] = initialPartSize
 	}
 	maxActive, probe := newConcurrencyProbe(concurrency)
-	return &partScheduler{
+	scheduler := &partScheduler{
 		initialPartSize: initialPartSize,
 		maxPartSize:     maxPartSize,
 		concurrency:     concurrency,
@@ -93,6 +98,40 @@ func newPartScheduler(size int64, initialPartSize int64, concurrency int) *partS
 		active:          make([]*activePart, concurrency),
 		probe:           probe,
 	}
+	scheduler.startConcurrencyProbeTimer()
+	return scheduler
+}
+
+func (p *activePart) setConnection(conn net.Conn) {
+	p.connMu.Lock()
+	if p.closeRequested {
+		p.connMu.Unlock()
+		closeConn(conn)
+		return
+	}
+	p.conn = conn
+	p.connMu.Unlock()
+}
+
+func (p *activePart) clearConnection() {
+	p.connMu.Lock()
+	p.conn = nil
+	p.connMu.Unlock()
+}
+
+func (p *activePart) closeConnection() {
+	p.connMu.Lock()
+	p.closeRequested = true
+	conn := p.conn
+	p.conn = nil
+	p.connMu.Unlock()
+	closeConn(conn)
+}
+
+func (p *activePart) connectionCloseRequested() bool {
+	p.connMu.Lock()
+	defer p.connMu.Unlock()
+	return p.closeRequested
 }
 
 func (s *partScheduler) nextPart(workerID int) (*activePart, bool) {
@@ -100,7 +139,7 @@ func (s *partScheduler) nextPart(workerID int) (*activePart, bool) {
 	defer s.mu.Unlock()
 
 	s.recoverRateLimitLocked(time.Now())
-	if s.activeCount >= s.maxActive || !s.probe.allowsWorker(workerID, s.maxActive) {
+	if s.activeCount >= s.maxActive || !s.probeAllowsWorkerLocked(workerID) {
 		return nil, false
 	}
 
@@ -152,7 +191,8 @@ func (s *partScheduler) nextFreshPartLocked(workerID int) (part, bool) {
 func (s *partScheduler) activateNextLocked(workerID int, p part) *activePart {
 	s.index++
 	p.index = s.index
-	p.rateProbe = s.rateProbeLocked() || s.probe.active()
+	p.rateProbe = s.rateProbeLocked()
+	p.concurrencyProbe = s.probe.workerPending(workerID)
 	return s.activateLocked(workerID, p)
 }
 

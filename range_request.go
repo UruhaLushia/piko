@@ -58,7 +58,7 @@ func closeConn(conn net.Conn) {
 	}
 }
 
-func (d *downloader) downloadRange(ctx context.Context, client *http.Client, writer io.WriterAt, active *activePart, probeIdleTimeout time.Duration) (int64, error) {
+func (d *downloader) downloadRange(ctx context.Context, client *http.Client, writer io.WriterAt, active *activePart, probeIdleTimeout time.Duration, confirmProbe func()) (int64, error) {
 	p := active.part
 	offset := p.start
 	var lastErr error
@@ -82,9 +82,11 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 		attemptCtx = httptrace.WithClientTrace(attemptCtx, &httptrace.ClientTrace{
 			GotConn: func(info httptrace.GotConnInfo) {
 				connInfo.set(info.Conn)
+				active.setConnection(info.Conn)
 			},
 		})
 		finishAttempt := func() {
+			active.clearConnection()
 			attemptCancel()
 		}
 		req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, d.url, nil)
@@ -116,6 +118,9 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 				return offset, nil
 			}
 			lastErr = err
+			if active.connectionCloseRequested() {
+				return offset, errConcurrencyProbeClosed
+			}
 			if !isRetryableDownloadError(err) {
 				return offset, err
 			}
@@ -123,7 +128,7 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 				return offset, err
 			}
 		} else {
-			err = d.copyRange(attemptCtx, attemptCancel, writer, resp, p.index, attemptStart, end, &offset, active, partLease(p), conn, probeIdleTimeout)
+			err = d.copyRange(attemptCtx, attemptCancel, writer, resp, p.index, attemptStart, end, &offset, active, partLease(p), conn, probeIdleTimeout, confirmProbe)
 			attemptCanceled := attemptCtx.Err() != nil
 			if shouldCloseRangeConnection(err, offset, end, active.end.Load()) {
 				abortAttempt()
@@ -138,6 +143,9 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 				return offset, nil
 			}
 			lastErr = err
+			if active.connectionCloseRequested() {
+				return offset, errConcurrencyProbeClosed
+			}
 			if !isRetryableDownloadError(err) {
 				return offset, err
 			}
