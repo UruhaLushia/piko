@@ -2,23 +2,42 @@ package cli
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 )
 
-func parseHeaders(values []string) http.Header {
+func parseHeaders(values []string) (http.Header, error) {
 	if len(values) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	headers := make(http.Header)
 	for _, value := range values {
-		name, headerValue, _ := strings.Cut(value, ":")
+		name, headerValue, ok := strings.Cut(value, ":")
+		name = strings.TrimSpace(name)
+		if !ok || !validHeaderName(name) || strings.ContainsAny(headerValue, "\r\n") {
+			return nil, fmt.Errorf("invalid header %q, expected Name: value", value)
+		}
 		headers.Add(name, strings.TrimSpace(headerValue))
 	}
-	return headers
+	return headers, nil
+}
+
+func validHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := range len(name) {
+		c := name[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("!#$%&'*+-.^_`|~", rune(c)) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func parseSize(value string) (int64, error) {
@@ -55,10 +74,17 @@ func parseSize(value string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	if math.IsNaN(valueFloat) || math.IsInf(valueFloat, 0) {
+		return 0, fmt.Errorf("must be a finite number")
+	}
 	if valueFloat <= 0 {
 		return 0, fmt.Errorf("must be positive")
 	}
-	return int64(valueFloat * float64(multiplier)), nil
+	size := valueFloat * float64(multiplier)
+	if size > math.MaxInt64 {
+		return 0, fmt.Errorf("size is too large")
+	}
+	return int64(size), nil
 }
 
 func formatBytes(n int64) string {

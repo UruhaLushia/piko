@@ -8,6 +8,8 @@ import (
 	"os"
 )
 
+const copyBufferSize = 1024 * 1024
+
 func (d *downloader) downloadSingle(ctx context.Context, output string, total int64, force bool) error {
 	discard := IsNullOutput(output)
 	partPath := ""

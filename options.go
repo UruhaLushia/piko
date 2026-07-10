@@ -15,14 +15,6 @@ const (
 	DefaultPartSize     = 4 * 1024 * 1024
 )
 
-const (
-	copyBufferSize        = 1024 * 1024
-	rangeWriteBufferSize  = 256 * 1024
-	maxBufferedRangeSize  = 512 * 1024
-	asyncWriteQueueSize   = 128
-	minBytesPerConnection = 5 * 1024 * 1024
-)
-
 type Options struct {
 	Output             string
 	Connections        int

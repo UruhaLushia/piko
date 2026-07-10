@@ -1,14 +1,14 @@
 package piko
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
-	"sync/atomic"
 	"time"
+
+	"github.com/UruhaLushia/piko/internal/dialer"
 )
 
 type HTTPOptions struct {
@@ -36,7 +36,7 @@ func NewHTTPClient(opts HTTPOptions) (*http.Client, error) {
 	return newHTTPClientFromOptions(opts, nil)
 }
 
-func newHTTPClientFromOptions(opts HTTPOptions, selector *dialIPSelector) (*http.Client, error) {
+func newHTTPClientFromOptions(opts HTTPOptions, selector *dialer.Selector) (*http.Client, error) {
 	transport, err := newTransport(opts, selector)
 	if err != nil {
 		return nil, err
@@ -48,10 +48,10 @@ func NewTransport(opts HTTPOptions) (*http.Transport, error) {
 	return newTransport(opts, nil)
 }
 
-func newTransport(opts HTTPOptions, selector *dialIPSelector) (*http.Transport, error) {
+func newTransport(opts HTTPOptions, selector *dialer.Selector) (*http.Transport, error) {
 	opts = opts.normalize()
 	if selector == nil {
-		selector = newDialIPSelector(opts.ConnectionStrategy, opts.AddressFamily)
+		selector = newDialSelector(opts.ConnectionStrategy, opts.AddressFamily)
 	}
 
 	proxy, err := proxyFromOptions(opts)
@@ -61,7 +61,7 @@ func newTransport(opts HTTPOptions, selector *dialIPSelector) (*http.Transport, 
 
 	transport := &http.Transport{
 		Proxy: proxy,
-		DialContext: newDialContext(&net.Dialer{
+		DialContext: dialer.NewContext(&net.Dialer{
 			Timeout:       opts.Timeout,
 			KeepAlive:     30 * time.Second,
 			FallbackDelay: 100 * time.Millisecond,
@@ -78,28 +78,17 @@ func newTransport(opts HTTPOptions, selector *dialIPSelector) (*http.Transport, 
 	return transport, nil
 }
 
-func newHTTPClient(timeout time.Duration, maxConnsPerHost int, protocol Protocol, strategy ConnectionStrategy, addressFamily AddressFamily, proxy string, proxyFunc func(*http.Request) (*url.URL, error), resolver Resolver, selector *dialIPSelector) (*http.Client, error) {
-	return newHTTPClientFromOptions(HTTPOptions{
-		Timeout:            timeout,
-		MaxConnsPerHost:    maxConnsPerHost,
-		Protocol:           protocol,
-		ConnectionStrategy: strategy,
-		AddressFamily:      addressFamily,
-		Proxy:              proxy,
-		ProxyFunc:          proxyFunc,
-		Resolver:           resolver,
-	}, selector)
-}
-
-func newHTTPClients(count int, timeout time.Duration, protocol Protocol, strategy ConnectionStrategy, addressFamily AddressFamily, proxy string, proxyFunc func(*http.Request) (*url.URL, error), resolver Resolver) ([]*http.Client, *dialIPSelector, error) {
+func newHTTPClients(count int, opts HTTPOptions) ([]*http.Client, *dialer.Selector, error) {
 	if count < 1 {
 		count = 1
 	}
-	selector := newDialIPSelector(strategy, addressFamily)
-	resolver = newCachedResolver(resolverForDial(resolver))
+	opts = opts.normalize()
+	opts.MaxConnsPerHost = 1
+	opts.Resolver = dialer.PrepareResolver(opts.Resolver)
+	selector := newDialSelector(opts.ConnectionStrategy, opts.AddressFamily)
 	clients := make([]*http.Client, 0, count)
 	for range count {
-		client, err := newHTTPClient(timeout, 1, protocol, strategy, addressFamily, proxy, proxyFunc, resolver, selector)
+		client, err := newHTTPClientFromOptions(opts, selector)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -154,147 +143,6 @@ func parseProxyURL(value string) (*url.URL, error) {
 	return parsed, nil
 }
 
-func newDialContext(dialer *net.Dialer, resolver Resolver, selector *dialIPSelector) func(context.Context, string, string) (net.Conn, error) {
-	if selector == nil {
-		selector = newDialIPSelector(ConnectionStrategyRoundRobin, AddressFamilyAuto)
-	}
-	resolver = newCachedResolver(resolverForDial(resolver))
-	return func(ctx context.Context, network string, address string) (net.Conn, error) {
-		host, port, err := net.SplitHostPort(address)
-		if err != nil || net.ParseIP(host) != nil {
-			return dialer.DialContext(ctx, network, address)
-		}
-
-		ips, err := resolver.LookupIPAddr(ctx, host)
-		if err != nil {
-			return nil, err
-		}
-		ips = filterIPsForNetwork(network, ips)
-		ips = filterIPsForAddressFamily(selector.addressFamily, ips)
-		if len(ips) == 0 {
-			return nil, &net.DNSError{Err: "no suitable address", Name: host}
-		}
-		ips = selector.order(ips)
-		if selector.strategy == ConnectionStrategyFastest {
-			return dialFastestIP(ctx, dialer, selector, network, port, ips)
-		}
-
-		var lastErr error
-		for _, ip := range ips {
-			conn, err := dialer.DialContext(ctx, network, joinIPPort(ip, port))
-			if err == nil {
-				return conn, nil
-			}
-			if ctx.Err() == nil {
-				selector.recordIP(ipAddrKey(ip), 0, 0, err)
-			}
-			lastErr = err
-		}
-		return nil, lastErr
-	}
-}
-
-func resolverForDial(resolver Resolver) Resolver {
-	if resolver != nil {
-		return resolver
-	}
-	return resolverFunc(net.DefaultResolver.LookupIPAddr)
-}
-
-type dialResult struct {
-	conn net.Conn
-	err  error
-}
-
-func dialFastestIP(ctx context.Context, dialer *net.Dialer, selector *dialIPSelector, network string, port string, ips []net.IPAddr) (net.Conn, error) {
-	if len(ips) == 1 {
-		conn, err := dialer.DialContext(ctx, network, joinIPPort(ips[0], port))
-		if err != nil {
-			selector.recordIP(ipAddrKey(ips[0]), 0, 0, err)
-		}
-		return conn, err
-	}
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	results := make(chan dialResult, len(ips))
-	var won atomic.Bool
-	for _, ip := range ips {
-		address := joinIPPort(ip, port)
-		go func() {
-			conn, err := dialer.DialContext(ctx, network, address)
-			if err != nil && ctx.Err() == nil {
-				selector.recordIP(ipAddrKey(ip), 0, 0, err)
-			}
-			if err == nil {
-				if !won.CompareAndSwap(false, true) {
-					_ = conn.Close()
-					return
-				}
-				cancel()
-			}
-			results <- dialResult{conn: conn, err: err}
-		}()
-	}
-
-	var lastErr error
-	for range ips {
-		result := <-results
-		if result.err == nil {
-			return result.conn, nil
-		}
-		lastErr = result.err
-	}
-	return nil, lastErr
-}
-
-func joinIPPort(ip net.IPAddr, port string) string {
-	host := ip.IP.String()
-	if ip.Zone != "" {
-		host += "%" + ip.Zone
-	}
-	return net.JoinHostPort(host, port)
-}
-
-func filterIPsForNetwork(network string, ips []net.IPAddr) []net.IPAddr {
-	filtered := ips[:0]
-	for _, ip := range ips {
-		switch {
-		case strings.HasSuffix(network, "4") && ip.IP.To4() == nil:
-			continue
-		case strings.HasSuffix(network, "6") && ip.IP.To4() != nil:
-			continue
-		default:
-			filtered = append(filtered, ip)
-		}
-	}
-	return filtered
-}
-
-func filterIPsForAddressFamily(addressFamily AddressFamily, ips []net.IPAddr) []net.IPAddr {
-	switch addressFamily {
-	case AddressFamilyIPv4:
-		filtered := ips[:0]
-		for _, ip := range ips {
-			if ip.IP.To4() != nil {
-				filtered = append(filtered, ip)
-			}
-		}
-		return filtered
-	case AddressFamilyIPv6:
-		filtered := ips[:0]
-		for _, ip := range ips {
-			if ip.IP.To4() == nil && ip.IP.To16() != nil {
-				filtered = append(filtered, ip)
-			}
-		}
-		return filtered
-	default:
-		return ips
-	}
-}
-
 func configureTransportProtocols(transport *http.Transport, protocol Protocol) {
 	if protocol == ProtocolAuto {
 		return
@@ -312,4 +160,34 @@ func configureTransportProtocols(transport *http.Transport, protocol Protocol) {
 		return
 	}
 	transport.Protocols = protocols
+}
+
+func newDialSelector(strategy ConnectionStrategy, family AddressFamily) *dialer.Selector {
+	return dialer.NewSelector(toDialStrategy(strategy), toDialAddressFamily(family))
+}
+
+func toDialStrategy(strategy ConnectionStrategy) dialer.Strategy {
+	switch strategy {
+	case ConnectionStrategySequential:
+		return dialer.StrategySequential
+	case ConnectionStrategyFastest:
+		return dialer.StrategyFastest
+	default:
+		return dialer.StrategyRoundRobin
+	}
+}
+
+func toDialAddressFamily(family AddressFamily) dialer.AddressFamily {
+	switch family {
+	case AddressFamilyIPv4:
+		return dialer.FamilyIPv4
+	case AddressFamilyIPv6:
+		return dialer.FamilyIPv6
+	case AddressFamilyPreferIPv4:
+		return dialer.FamilyPreferIPv4
+	case AddressFamilyPreferIPv6:
+		return dialer.FamilyPreferIPv6
+	default:
+		return dialer.FamilyAuto
+	}
 }

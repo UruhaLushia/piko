@@ -9,12 +9,16 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/UruhaLushia/piko/internal/dialer"
 )
+
+const minBytesPerConnection = 5 * 1024 * 1024
 
 type downloader struct {
 	client       *http.Client
 	clients      []*http.Client
-	selector     *dialIPSelector
+	selector     *dialer.Selector
 	url          string
 	ua           string
 	headers      http.Header
@@ -34,7 +38,7 @@ type Client struct {
 	opts     Options
 	client   *http.Client
 	clients  []*http.Client
-	selector *dialIPSelector
+	selector *dialer.Selector
 }
 
 func NewClient(opts Options) (*Client, error) {
@@ -42,7 +46,7 @@ func NewClient(opts Options) (*Client, error) {
 
 	clients := compactHTTPClients(opts.HTTPClients)
 	client := opts.HTTPClient
-	var selector *dialIPSelector
+	var selector *dialer.Selector
 	switch {
 	case client != nil:
 		if len(clients) == 0 {
@@ -52,7 +56,15 @@ func NewClient(opts Options) (*Client, error) {
 		client = clients[0]
 	default:
 		var err error
-		clients, selector, err = newHTTPClients(opts.Connections, opts.Timeout, opts.Protocol, opts.ConnectionStrategy, opts.AddressFamily, opts.Proxy, opts.ProxyFunc, opts.Resolver)
+		clients, selector, err = newHTTPClients(opts.Connections, HTTPOptions{
+			Timeout:            opts.Timeout,
+			Protocol:           opts.Protocol,
+			ConnectionStrategy: opts.ConnectionStrategy,
+			AddressFamily:      opts.AddressFamily,
+			Proxy:              opts.Proxy,
+			ProxyFunc:          opts.ProxyFunc,
+			Resolver:           opts.Resolver,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -92,14 +104,14 @@ func DownloadBytes(ctx context.Context, rawURL string, opts Options) ([]byte, Re
 	return client.DownloadBytes(ctx, rawURL)
 }
 
-func newDownloader(rawURL string, opts Options, client *http.Client, clients []*http.Client, selector *dialIPSelector) *downloader {
+func newDownloader(rawURL string, opts Options, client *http.Client, clients []*http.Client, selector *dialer.Selector) *downloader {
 	return &downloader{
 		client:       client,
 		clients:      clients,
 		selector:     selector,
 		url:          rawURL,
 		ua:           opts.UserAgent,
-		headers:      cloneHeader(opts.Headers),
+		headers:      opts.Headers,
 		retries:      opts.Retries,
 		stallTimeout: opts.StallTimeout,
 		progress:     opts.Progress,
@@ -107,7 +119,10 @@ func newDownloader(rawURL string, opts Options, client *http.Client, clients []*
 }
 
 func compactHTTPClients(clients []*http.Client) []*http.Client {
-	compacted := clients[:0]
+	if len(clients) == 0 {
+		return nil
+	}
+	compacted := make([]*http.Client, 0, len(clients))
 	for _, client := range clients {
 		if client != nil {
 			compacted = append(compacted, client)
@@ -124,47 +139,42 @@ func cloneHeader(header http.Header) http.Header {
 }
 
 func (d *downloader) run(ctx context.Context, opts Options) (Result, error) {
-	plan, err := d.plan(ctx, opts, true)
+	result, err := d.plan(ctx, opts, true)
 	if err != nil {
 		return Result{}, err
 	}
 
-	if !plan.result.Discarded {
-		if err := prepareOutput(plan.result.Output, opts.Force); err != nil {
+	if !result.Discarded {
+		if err := prepareOutput(result.Output, opts.Force); err != nil {
 			return Result{}, err
 		}
 	}
 
 	if opts.Started != nil {
-		opts.Started(plan.result)
+		opts.Started(result)
 	}
 
-	d.total = plan.info.size
-	if plan.result.Parallel {
-		err = d.downloadParts(ctx, plan.result.Output, plan.info.size, opts.PartSize, plan.result.Connections, opts.Force)
+	d.total = result.Size
+	if result.Parallel {
+		err = d.downloadParts(ctx, result.Output, result.Size, result.PartSize, result.Connections, opts.Force)
 	} else {
-		err = d.downloadSingle(ctx, plan.result.Output, plan.info.size, opts.Force)
+		err = d.downloadSingle(ctx, result.Output, result.Size, opts.Force)
 	}
 	if err != nil {
-		return plan.result, err
+		return result, err
 	}
-	return plan.result, nil
+	return result, nil
 }
 
-type downloadPlan struct {
-	info   remoteInfo
-	result Result
-}
-
-func (d *downloader) plan(ctx context.Context, opts Options, allowDiscard bool) (downloadPlan, error) {
+func (d *downloader) plan(ctx context.Context, opts Options, allowDiscard bool) (Result, error) {
 	parsed, err := url.Parse(d.url)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return downloadPlan{}, fmt.Errorf("invalid url: %q", d.url)
+		return Result{}, fmt.Errorf("invalid url: %q", d.url)
 	}
 
 	info, err := d.inspect(ctx)
 	if err != nil {
-		return downloadPlan{}, err
+		return Result{}, err
 	}
 	if info.finalURL != "" {
 		d.url = info.finalURL
@@ -188,18 +198,15 @@ func (d *downloader) plan(ctx context.Context, opts Options, allowDiscard bool) 
 		}
 	}
 
-	return downloadPlan{
-		info: info,
-		result: Result{
-			Output:      output,
-			Size:        info.size,
-			Rangeable:   info.rangeable,
-			Discarded:   discard,
-			FinalURL:    d.url,
-			Connections: connections,
-			Parallel:    parallel,
-			PartSize:    opts.PartSize,
-		},
+	return Result{
+		Output:      output,
+		Size:        info.size,
+		Rangeable:   info.rangeable,
+		Discarded:   discard,
+		FinalURL:    d.url,
+		Connections: connections,
+		Parallel:    parallel,
+		PartSize:    opts.PartSize,
 	}, nil
 }
 

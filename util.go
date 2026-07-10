@@ -24,10 +24,13 @@ func parseContentRangeSize(value string) int64 {
 }
 
 func retryDelay(attempt int) time.Duration {
-	delay := time.Duration(250*(1<<attempt)) * time.Millisecond
-	if delay > 3*time.Second {
+	if attempt <= 0 {
+		return 250 * time.Millisecond
+	}
+	if attempt >= 4 {
 		return 3 * time.Second
 	}
+	delay := time.Duration(250*(1<<attempt)) * time.Millisecond
 	return delay
 }
 

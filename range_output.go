@@ -1,10 +1,61 @@
 package piko
 
 import (
+	"context"
 	"io"
 	"os"
 	"sync"
 )
+
+const asyncWriteQueueSize = 128
+
+func (d *downloader) downloadParts(ctx context.Context, output string, size int64, partSize int64, concurrency int, force bool) error {
+	discard := IsNullOutput(output)
+	partPath := ""
+	var writer io.WriterAt = discardWriterAt{}
+	var file *os.File
+	var asyncWriter *asyncFileWriterAt
+	if !discard {
+		partPath = output + ".part"
+		if err := prepareTemp(partPath); err != nil {
+			return err
+		}
+
+		var err error
+		file, err = os.OpenFile(partPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		if err != nil {
+			return err
+		}
+		if err := file.Truncate(size); err != nil {
+			file.Close()
+			_ = os.Remove(partPath)
+			return err
+		}
+		asyncWriter = newAsyncFileWriterAt(file)
+		writer = asyncWriter
+	}
+
+	err := d.downloadPartsToWriter(ctx, writer, size, partSize, concurrency)
+	if asyncWriter != nil {
+		if writeErr := asyncWriter.Close(); err == nil {
+			err = writeErr
+		}
+	}
+	if closeErr := closeFile(file); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		if !discard {
+			_ = os.Remove(partPath)
+		}
+		return err
+	}
+
+	if discard {
+		return nil
+	}
+	return finishOutput(partPath, output, force)
+}
 
 type asyncFileWriterAt struct {
 	file *os.File

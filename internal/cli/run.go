@@ -27,18 +27,17 @@ func run(ctx context.Context, rawURL string, opts cliOptions) error {
 	if err != nil {
 		return err
 	}
-	headers := parseHeaders(opts.headers)
-	var resolver piko.Resolver
-	if len(opts.dnsServers) > 0 {
-		resolver, err = piko.ParseResolver(opts.dnsServers...)
-		if err != nil {
-			return err
-		}
-	} else if opts.dns != "" {
-		resolver, err = piko.ParseResolver(opts.dns)
-		if err != nil {
-			return err
-		}
+	headers, err := parseHeaders(opts.headers)
+	if err != nil {
+		return fmt.Errorf("--header: %w", err)
+	}
+	dnsValues := opts.dnsServers
+	if len(dnsValues) == 0 {
+		dnsValues = []string{opts.dns}
+	}
+	resolver, err := piko.ParseResolver(dnsValues...)
+	if err != nil {
+		return fmt.Errorf("--dns: %w", err)
 	}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
 	defer stop()

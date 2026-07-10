@@ -1,9 +1,6 @@
 package piko
 
-import (
-	"errors"
-	"time"
-)
+import "time"
 
 const (
 	slowConnectionCheckInterval = 2 * time.Second
@@ -16,8 +13,6 @@ const (
 	slowTailMinAge              = 4 * time.Second
 	slowTailMinBytes            = 256 * 1024
 )
-
-var errSlowConnection = errors.New("slow connection")
 
 func (d *downloader) registerRangeSpeed() int64 {
 	d.speedMu.Lock()

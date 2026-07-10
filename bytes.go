@@ -8,23 +8,21 @@ import (
 )
 
 func (d *downloader) runBytes(ctx context.Context, opts Options) ([]byte, Result, error) {
-	plan, err := d.plan(ctx, opts, false)
+	result, err := d.plan(ctx, opts, false)
 	if err != nil {
 		return nil, Result{}, err
 	}
-	result := plan.result
-	result.Discarded = false
 
 	if opts.Started != nil {
 		opts.Started(result)
 	}
 
-	d.total = plan.info.size
+	d.total = result.Size
 	var data []byte
 	if result.Parallel {
-		data, err = d.downloadPartsToBytes(ctx, plan.info.size, opts.PartSize, result.Connections)
+		data, err = d.downloadPartsToBytes(ctx, result.Size, result.PartSize, result.Connections)
 	} else {
-		data, err = d.downloadSingleToBytes(ctx, plan.info.size)
+		data, err = d.downloadSingleToBytes(ctx, result.Size)
 	}
 	if err != nil {
 		return nil, result, err
