@@ -11,6 +11,8 @@ import (
 	"strings"
 )
 
+const statusBandwidthLimitExceeded = 509
+
 type httpStatusError struct {
 	partIndex int
 	code      int
@@ -77,7 +79,12 @@ func isRetryableDownloadError(err error) bool {
 
 func isRateLimitedDownloadError(err error) bool {
 	var statusErr httpStatusError
-	return errors.As(err, &statusErr) && statusErr.code == http.StatusTooManyRequests
+	if !errors.As(err, &statusErr) {
+		return false
+	}
+	return statusErr.code == http.StatusTooManyRequests ||
+		statusErr.code == http.StatusServiceUnavailable ||
+		statusErr.code == statusBandwidthLimitExceeded
 }
 
 func isRateProbeTimeout(err error) bool {

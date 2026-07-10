@@ -3,12 +3,12 @@ package piko
 import "time"
 
 const (
-	rateLimitMinActive = 2
-	rateLimitCooldown  = 10 * time.Second
-	rateLimitRecover   = 15 * time.Second
-	rateLimitWindow    = 30 * time.Second
-	rateLimitStrikes   = 2
-	rateLimitIdle      = 1 * time.Second
+	rateLimitCooldown      = 10 * time.Second
+	rateLimitRecover       = 15 * time.Second
+	rateLimitWindow        = 30 * time.Second
+	rateLimitBackoffWindow = 2 * time.Second
+	rateLimitStrikes       = 2
+	rateLimitIdle          = 1 * time.Second
 )
 
 func (s *partScheduler) limitForRateLimit(delay time.Duration) {
@@ -16,6 +16,8 @@ func (s *partScheduler) limitForRateLimit(delay time.Duration) {
 	defer s.mu.Unlock()
 
 	s.normalizeMaxActiveLocked()
+	probing := s.probe.active()
+	s.stopConcurrencyProbeLocked()
 	if delay < rateLimitCooldown {
 		delay = rateLimitCooldown
 	}
@@ -25,10 +27,17 @@ func (s *partScheduler) limitForRateLimit(delay time.Duration) {
 	}
 	s.limitedAt = now
 	s.limitStrikes++
-	if s.limitStrikes >= rateLimitStrikes && s.maxActive > rateLimitMinActive {
-		s.maxActive--
+	if probing {
+		s.backoffConcurrencyLocked()
 		s.clearRateProbeLocked()
-		s.limitStrikes = rateLimitStrikes - 1
+		s.limitBackoffAt = now
+		s.limitStrikes = 0
+	} else if s.limitStrikes >= rateLimitStrikes && s.maxActive > minimumActiveConnections &&
+		now.Sub(s.limitBackoffAt) >= rateLimitBackoffWindow {
+		s.backoffConcurrencyLocked()
+		s.clearRateProbeLocked()
+		s.limitBackoffAt = now
+		s.limitStrikes = 0
 	}
 	s.rateLimited = true
 	s.extendRecoveryLocked(now, delay)
@@ -46,7 +55,7 @@ func (s *partScheduler) recoverRateLimitLocked(now time.Time) {
 
 func (s *partScheduler) rateProbeLocked() bool {
 	return s.probeLimit == s.maxActive &&
-		s.probeLimit > rateLimitMinActive &&
+		s.probeLimit > minimumActiveConnections &&
 		s.activeCount >= s.probeLimit-1
 }
 
@@ -70,11 +79,20 @@ func (s *partScheduler) rejectRateProbe(delay time.Duration) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.probeLimit == s.maxActive && s.maxActive > rateLimitMinActive {
+	if s.probe.active() {
+		s.stopConcurrencyProbeLocked()
+		s.backoffConcurrencyLocked()
+		s.rateLimited = true
+	} else if s.probeLimit == s.maxActive && s.maxActive > minimumActiveConnections {
 		s.maxActive--
 	}
 	s.clearRateProbeLocked()
 	s.extendRecoveryLocked(time.Now(), delay)
+}
+
+func (s *partScheduler) backoffConcurrencyLocked() {
+	minimum := min(s.concurrency, minimumActiveConnections)
+	s.maxActive = max(minimum, s.maxActive/2)
 }
 
 func (s *partScheduler) normalizeMaxActiveLocked() {

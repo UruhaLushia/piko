@@ -79,6 +79,6 @@ func (d *downloader) runPartWorker(ctx context.Context, scheduler *partScheduler
 		}
 
 		scheduler.confirmRateProbe(p)
-		scheduler.record(workerID, max(offset-p.start, 0), time.Since(started))
+		scheduler.record(workerID, active.probeID, max(offset-p.start, 0), time.Since(started))
 	}
 }

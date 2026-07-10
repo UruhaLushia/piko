@@ -7,7 +7,11 @@ import (
 	"time"
 )
 
-const idlePartPoll = 50 * time.Millisecond
+const (
+	idlePartPoll     = 50 * time.Millisecond
+	minStealPartSize = 128 * 1024
+	minStealAge      = 200 * time.Millisecond
+)
 
 type part struct {
 	index     int
@@ -26,23 +30,25 @@ type partScheduler struct {
 	maxPartSize     int64
 	concurrency     int
 
-	mu           sync.Mutex
-	front        int64
-	back         int64
-	index        int
-	workerDone   []int
-	workerSize   []int64
-	partSizeHint int64
-	activeCount  int
-	maxActive    int
-	probeLimit   int
-	rateLimited  bool
-	recoverAt    time.Time
-	limitedAt    time.Time
-	limitStrikes int
-	queue        []part
-	delayed      []delayedPart
-	active       []*activePart
+	mu             sync.Mutex
+	front          int64
+	back           int64
+	index          int
+	workerDone     []int
+	workerSize     []int64
+	partSizeHint   int64
+	activeCount    int
+	maxActive      int
+	probeLimit     int
+	rateLimited    bool
+	recoverAt      time.Time
+	limitedAt      time.Time
+	limitBackoffAt time.Time
+	limitStrikes   int
+	queue          []part
+	delayed        []delayedPart
+	active         []*activePart
+	probe          concurrencyProbe
 }
 
 type delayedPart struct {
@@ -51,10 +57,12 @@ type delayedPart struct {
 }
 
 type activePart struct {
-	mu     sync.Mutex
-	part   part
-	offset atomic.Int64
-	end    atomic.Int64
+	mu      sync.Mutex
+	part    part
+	started time.Time
+	probeID int
+	offset  atomic.Int64
+	end     atomic.Int64
 }
 
 func newPartScheduler(size int64, initialPartSize int64, concurrency int) *partScheduler {
@@ -72,6 +80,7 @@ func newPartScheduler(size int64, initialPartSize int64, concurrency int) *partS
 	for i := range workerSize {
 		workerSize[i] = initialPartSize
 	}
+	maxActive, probe := newConcurrencyProbe(concurrency)
 	return &partScheduler{
 		initialPartSize: initialPartSize,
 		maxPartSize:     maxPartSize,
@@ -80,8 +89,9 @@ func newPartScheduler(size int64, initialPartSize int64, concurrency int) *partS
 		workerDone:      make([]int, concurrency),
 		workerSize:      workerSize,
 		partSizeHint:    initialPartSize,
-		maxActive:       min(concurrency, startupActive),
+		maxActive:       maxActive,
 		active:          make([]*activePart, concurrency),
+		probe:           probe,
 	}
 }
 
@@ -90,7 +100,7 @@ func (s *partScheduler) nextPart(workerID int) (*activePart, bool) {
 	defer s.mu.Unlock()
 
 	s.recoverRateLimitLocked(time.Now())
-	if s.activeCount >= s.maxActive {
+	if s.activeCount >= s.maxActive || !s.probe.allowsWorker(workerID, s.maxActive) {
 		return nil, false
 	}
 
@@ -100,6 +110,10 @@ func (s *partScheduler) nextPart(workerID int) (*activePart, bool) {
 	}
 
 	p, ok := s.nextFreshPartLocked(workerID)
+	if ok {
+		return s.activateNextLocked(workerID, p), true
+	}
+	p, ok = s.stealPartLocked(workerID)
 	if !ok {
 		return nil, false
 	}
@@ -138,12 +152,12 @@ func (s *partScheduler) nextFreshPartLocked(workerID int) (part, bool) {
 func (s *partScheduler) activateNextLocked(workerID int, p part) *activePart {
 	s.index++
 	p.index = s.index
-	p.rateProbe = s.rateProbeLocked()
+	p.rateProbe = s.rateProbeLocked() || s.probe.active()
 	return s.activateLocked(workerID, p)
 }
 
 func (s *partScheduler) activateLocked(workerID int, p part) *activePart {
-	active := &activePart{part: p}
+	active := &activePart{part: p, started: time.Now(), probeID: s.probe.generation}
 	active.offset.Store(p.start)
 	active.end.Store(p.end)
 
@@ -180,6 +194,48 @@ func (s *partScheduler) hasPendingWork() bool {
 		}
 	}
 	return false
+}
+
+func (s *partScheduler) stealPartLocked(workerID int) (part, bool) {
+	var chosen *activePart
+	var chosenRemaining int64
+
+	now := time.Now()
+	for id, active := range s.active {
+		if id == workerID || active == nil || now.Sub(active.started) < minStealAge {
+			continue
+		}
+
+		active.mu.Lock()
+		remaining := active.end.Load() - active.offset.Load() + 1
+		active.mu.Unlock()
+		if remaining < minStealPartSize*2 || remaining <= chosenRemaining {
+			continue
+		}
+		chosen = active
+		chosenRemaining = remaining
+	}
+	if chosen == nil {
+		return part{}, false
+	}
+
+	chosen.mu.Lock()
+	defer chosen.mu.Unlock()
+
+	oldEnd := chosen.end.Load()
+	start := chosen.offset.Load()
+	remaining := oldEnd - start + 1
+	if remaining < minStealPartSize*2 {
+		return part{}, false
+	}
+
+	stolen := part{
+		requeues: chosen.part.requeues,
+		end:      oldEnd,
+	}
+	stolen.start = start + remaining/2
+	chosen.end.Store(stolen.start - 1)
+	return stolen, true
 }
 
 func (s *partScheduler) requeue(p part, offset int64, maxRequeues int, delay time.Duration) bool {

@@ -7,24 +7,23 @@ const (
 	warmupPartSize     = 4 * 1024 * 1024
 	minDynamicPartSize = 512 * 1024
 	minTailPartSize    = 128 * 1024
-	startupActive      = 4
 	tailPartsPerConn   = 4
 	limitedTailParts   = 2
 	partSizeTargetTime = 24 * time.Second
 	rateLimitedPartMin = 32 * 1024 * 1024
 )
 
-func (s *partScheduler) record(workerID int, bytes int64, elapsed time.Duration) {
+func (s *partScheduler) record(workerID int, probeID int, bytes int64, elapsed time.Duration) {
 	if workerID < 0 || workerID >= len(s.workerSize) || bytes <= 0 || elapsed <= 0 {
 		return
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.recordConcurrencyProbeLocked(workerID, probeID)
 	s.adjustPartSizeLocked(workerID, bytes, elapsed)
 	s.updatePartSizeHintLocked(s.workerPartSizeLocked(workerID))
 	s.workerDone[workerID]++
-	s.growStartupLocked()
 }
 
 func (s *partScheduler) penalize(workerID int) {
@@ -42,6 +41,9 @@ func (s *partScheduler) penalize(workerID int) {
 }
 
 func (s *partScheduler) basePartSizeLocked(workerID int, remaining int64) int64 {
+	if s.probe.active() {
+		return min(remaining, min(s.maxPartSize, int64(concurrencyProbePartSize)))
+	}
 	if s.shouldWarmupLocked(workerID) {
 		return min(remaining, min(s.maxPartSize, int64(warmupPartSize)))
 	}
@@ -126,13 +128,6 @@ func (s *partScheduler) updatePartSizeHintLocked(size int64) {
 
 func (s *partScheduler) rateLimitedPartFloorLocked() int64 {
 	return min(max(s.initialPartSize, int64(rateLimitedPartMin)), s.maxPartSize)
-}
-
-func (s *partScheduler) growStartupLocked() {
-	if s.rateLimited || s.maxActive >= s.concurrency {
-		return
-	}
-	s.maxActive++
 }
 
 func clampPartSize(size int64, remaining int64, maxPartSize int64, minPartSize int64) int64 {
