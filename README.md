@@ -116,12 +116,26 @@ Return bytes for your own storage or transport:
 ```go
 data, result, err := piko.DownloadBytes(ctx, "https://example.com/file.pkg", piko.Options{
 	Connections: 8,
+	Offset:      1024,
+	Length:      4096,
 })
 if err != nil {
 	return err
 }
 _ = result
 _ = data
+```
+
+`Offset` is zero-based and `Length: 0` means through the end of the resource. For ranged downloads, `Result.Size` is the selected length and `Result.TotalSize` is the complete remote size.
+
+For repeated random reads, reuse a client and skip remote-size probing:
+
+```go
+client, err := piko.NewClient(piko.Options{Connections: 8})
+if err != nil {
+	return err
+}
+data, result, err := client.DownloadBytesRange(ctx, url, offset, length)
 ```
 
 Use custom DNS and proxy:

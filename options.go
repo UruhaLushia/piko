@@ -17,6 +17,8 @@ const (
 
 type Options struct {
 	Output             string
+	Offset             int64
+	Length             int64
 	Connections        int
 	Retries            int
 	Force              bool
@@ -45,12 +47,15 @@ type Progress struct {
 
 type Result struct {
 	Output      string
+	Offset      int64
 	Size        int64
+	TotalSize   int64
 	Rangeable   bool
 	Discarded   bool
 	FinalURL    string
 	Connections int
 	Parallel    bool
+	Segmented   bool
 	PartSize    int64
 }
 

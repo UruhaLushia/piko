@@ -96,10 +96,12 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 			return offset, err
 		}
 		d.setCommonHeaders(req)
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, end))
 
 		attemptStart := offset
 		attemptStarted := time.Now()
+		remoteStart := d.rangeOffset + offset
+		remoteEnd := d.rangeOffset + end
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", remoteStart, remoteEnd))
 		resp, err := client.Do(req)
 		probeTimer.stop()
 		conn, connKey := connInfo.snapshot()
@@ -128,7 +130,7 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 				return offset, err
 			}
 		} else {
-			err = d.copyRange(attemptCtx, attemptCancel, writer, resp, p.index, attemptStart, end, &offset, active, partLease(p), conn, probeIdleTimeout, confirmProbe)
+			err = d.copyRange(attemptCtx, attemptCancel, writer, resp, p.index, attemptStart, end, remoteStart, remoteEnd, &offset, active, partLease(p), conn, probeIdleTimeout, confirmProbe)
 			attemptCanceled := attemptCtx.Err() != nil
 			if shouldCloseRangeConnection(err, offset, end, active.end.Load()) {
 				abortAttempt()

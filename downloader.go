@@ -26,6 +26,7 @@ type downloader struct {
 	stallTimeout time.Duration
 	progress     func(Progress)
 	total        int64
+	rangeOffset  int64
 
 	done atomic.Int64
 
@@ -86,6 +87,16 @@ func (c *Client) DownloadBytes(ctx context.Context, rawURL string) ([]byte, Resu
 	return d.runBytes(ctx, c.opts)
 }
 
+// DownloadBytesRange downloads exactly length bytes starting at offset without
+// probing the remote size first. A zero length returns an empty result.
+func (c *Client) DownloadBytesRange(ctx context.Context, rawURL string, offset int64, length int64) ([]byte, Result, error) {
+	opts := c.opts
+	opts.Offset = offset
+	opts.Length = length
+	d := newDownloader(rawURL, opts, c.client, c.clients, c.selector)
+	return d.runBytesRange(ctx, opts)
+}
+
 // Download downloads rawURL using opts and returns the resolved output details.
 func Download(ctx context.Context, rawURL string, opts Options) (Result, error) {
 	client, err := NewClient(opts)
@@ -104,6 +115,16 @@ func DownloadBytes(ctx context.Context, rawURL string, opts Options) ([]byte, Re
 	return client.DownloadBytes(ctx, rawURL)
 }
 
+// DownloadBytesRange downloads a known byte range without probing the remote
+// size first. Reuse Client.DownloadBytesRange for repeated range reads.
+func DownloadBytesRange(ctx context.Context, rawURL string, offset int64, length int64, opts Options) ([]byte, Result, error) {
+	client, err := NewClient(opts)
+	if err != nil {
+		return nil, Result{}, err
+	}
+	return client.DownloadBytesRange(ctx, rawURL, offset, length)
+}
+
 func newDownloader(rawURL string, opts Options, client *http.Client, clients []*http.Client, selector *dialer.Selector) *downloader {
 	return &downloader{
 		client:       client,
@@ -115,6 +136,7 @@ func newDownloader(rawURL string, opts Options, client *http.Client, clients []*
 		retries:      opts.Retries,
 		stallTimeout: opts.StallTimeout,
 		progress:     opts.Progress,
+		rangeOffset:  opts.Offset,
 	}
 }
 
@@ -155,7 +177,7 @@ func (d *downloader) run(ctx context.Context, opts Options) (Result, error) {
 	}
 
 	d.total = result.Size
-	if result.Parallel {
+	if result.Segmented {
 		err = d.downloadParts(ctx, result.Output, result.Size, result.PartSize, result.Connections, opts.Force)
 	} else {
 		err = d.downloadSingle(ctx, result.Output, result.Size, opts.Force)
@@ -186,28 +208,63 @@ func (d *downloader) plan(ctx context.Context, opts Options, allowDiscard bool) 
 	output := resolveOutputPath(opts.Output, parsed, info.suggested)
 	discard := allowDiscard && IsNullOutput(output)
 
+	selectionSize, partial, err := selectedRange(info.size, opts.Offset, opts.Length)
+	if err != nil {
+		return Result{}, err
+	}
+	if partial && (!info.rangeable || info.size <= 0) {
+		return Result{}, fmt.Errorf("byte range requires a rangeable resource with a known size")
+	}
+
 	connections := opts.Connections
-	parallel := connections > 1 && info.rangeable && info.size > 0
-	if !parallel {
-		connections = 1
-	} else {
+	if connections > 1 && info.rangeable && selectionSize > 0 {
 		bytesPerConnection := max(opts.PartSize, int64(minBytesPerConnection))
-		maxUseful := max(int((info.size+bytesPerConnection-1)/bytesPerConnection), 1)
+		maxUseful := max(int((selectionSize+bytesPerConnection-1)/bytesPerConnection), 1)
 		if connections > maxUseful {
 			connections = maxUseful
 		}
 	}
+	parallel := connections > 1 && info.rangeable && selectionSize > 0
+	segmented := partial || parallel
+	if !segmented {
+		connections = 1
+	}
 
 	return Result{
 		Output:      output,
-		Size:        info.size,
+		Offset:      opts.Offset,
+		Size:        selectionSize,
+		TotalSize:   info.size,
 		Rangeable:   info.rangeable,
 		Discarded:   discard,
 		FinalURL:    d.url,
 		Connections: connections,
 		Parallel:    parallel,
 		PartSize:    opts.PartSize,
+		Segmented:   segmented,
 	}, nil
+}
+
+func selectedRange(total int64, offset int64, length int64) (int64, bool, error) {
+	if offset < 0 {
+		return 0, false, fmt.Errorf("negative offset %d", offset)
+	}
+	if length < 0 {
+		return 0, false, fmt.Errorf("negative length %d", length)
+	}
+	partial := offset > 0 || length > 0
+	if !partial || total <= 0 {
+		return total, partial, nil
+	}
+	if offset >= total {
+		return 0, true, fmt.Errorf("offset %d outside resource size %d", offset, total)
+	}
+
+	size := total - offset
+	if length > 0 {
+		size = min(size, length)
+	}
+	return size, true, nil
 }
 
 func (d *downloader) setCommonHeaders(req *http.Request) {

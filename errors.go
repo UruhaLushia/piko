@@ -73,8 +73,7 @@ func isRetryableDownloadError(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
-	var statusErr httpStatusError
-	if errors.As(err, &statusErr) {
+	if statusErr, ok := errors.AsType[httpStatusError](err); ok {
 		return statusErr.code == http.StatusTooManyRequests || statusErr.code >= 500
 	}
 	return true
@@ -101,8 +100,7 @@ func isTransientNetworkError(err error) bool {
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
-	var statusErr httpStatusError
-	if errors.As(err, &statusErr) {
+	if _, ok := errors.AsType[httpStatusError](err); ok {
 		return false
 	}
 	var netErr net.Error

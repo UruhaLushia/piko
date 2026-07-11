@@ -116,12 +116,26 @@ func main() {
 ```go
 data, result, err := piko.DownloadBytes(ctx, "https://example.com/file.pkg", piko.Options{
 	Connections: 8,
+	Offset:      1024,
+	Length:      4096,
 })
 if err != nil {
 	return err
 }
 _ = result
 _ = data
+```
+
+`Offset` 从 0 开始，`Length: 0` 表示下载到远端文件末尾。范围下载中，`Result.Size` 是实际选区长度，`Result.TotalSize` 是远端完整大小。
+
+重复随机读取远程文件时，可以复用客户端并跳过远端大小探测：
+
+```go
+client, err := piko.NewClient(piko.Options{Connections: 8})
+if err != nil {
+	return err
+}
+data, result, err := client.DownloadBytesRange(ctx, url, offset, length)
 ```
 
 使用自定义 DNS 和代理：

@@ -15,11 +15,11 @@ const (
 	maxBufferedRangeSize = 512 * 1024
 )
 
-func (d *downloader) copyRange(ctx context.Context, cancel context.CancelFunc, writer io.WriterAt, resp *http.Response, partIndex int, requestStart int64, requestEnd int64, offset *int64, active *activePart, lease time.Duration, conn net.Conn, probeIdleTimeout time.Duration, confirmProbe func()) error {
+func (d *downloader) copyRange(ctx context.Context, cancel context.CancelFunc, writer io.WriterAt, resp *http.Response, partIndex int, requestStart int64, requestEnd int64, remoteStart int64, remoteEnd int64, offset *int64, active *activePart, lease time.Duration, conn net.Conn, probeIdleTimeout time.Duration, confirmProbe func()) error {
 	if resp.StatusCode != http.StatusPartialContent {
 		return httpStatusError{partIndex: partIndex, code: resp.StatusCode, status: resp.Status}
 	}
-	if err := validateContentRange(partIndex, resp.Header.Get("Content-Range"), requestStart, requestEnd); err != nil {
+	if err := validateContentRange(partIndex, resp.Header.Get("Content-Range"), remoteStart, remoteEnd); err != nil {
 		return err
 	}
 
