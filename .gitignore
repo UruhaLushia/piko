@@ -16,6 +16,7 @@ bin/
 
 # Downloader temp files
 *.part
+*.resume
 
 # Local editor/OS files
 .idea/

@@ -6,6 +6,8 @@ download:
   # Output file. Use NUL on Windows or /dev/null on Unix to discard output.
   output: file.pkg
   force: false
+  # Keep .part data and resume completed byte ranges after interruption.
+  resume: true
   connections: 32
   retry: 3
   # Initial range part size. piko adjusts later parts automatically.

@@ -10,13 +10,19 @@ import (
 )
 
 func (d *downloader) downloadPartsToWriter(ctx context.Context, writer io.WriterAt, size int64, partSize int64, concurrency int) error {
+	return d.downloadPartsToWriterSpans(ctx, writer, size, partSize, concurrency, nil, 0)
+}
+
+func (d *downloader) downloadPartsToWriterSpans(ctx context.Context, writer io.WriterAt, size int64, partSize int64, concurrency int, pending []downloadSpan, completed int64) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	d.done.Store(0)
+	d.resumed = completed
+	d.total = size
+	d.done.Store(completed)
 	d.emitProgress(size, false)
 	errCh := make(chan error, 1)
-	scheduler := newPartScheduler(size, partSize, concurrency)
+	scheduler := newPartScheduler(size, partSize, concurrency, pending)
 
 	var wg sync.WaitGroup
 	for workerID := range concurrency {
@@ -74,14 +80,16 @@ func (d *downloader) runPartWorker(ctx context.Context, scheduler *partScheduler
 		scheduler.finish(workerID, active)
 		if err != nil {
 			p.end = active.end.Load()
-			if ctx.Err() == nil && isRetryableDownloadError(err) {
-				retry := d.planRangeRetry(scheduler, workerID, p, offset, partSize, err)
-				if scheduler.requeue(p, offset, retry.maxRequeues, retry.delay) {
-					continue
+			if offset <= p.end {
+				if ctx.Err() == nil && isRetryableDownloadError(err) {
+					retry := d.planRangeRetry(scheduler, workerID, p, offset, partSize, err)
+					if scheduler.requeue(p, offset, retry.maxRequeues, retry.delay) {
+						continue
+					}
+					err = fmt.Errorf("part %d retry budget exhausted at byte %d: %w", p.index, offset, err)
 				}
-				err = fmt.Errorf("part %d retry budget exhausted at byte %d: %w", p.index, offset, err)
+				return err
 			}
-			return err
 		}
 
 		scheduler.confirmRateProbe(p)

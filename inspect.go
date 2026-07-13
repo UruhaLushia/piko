@@ -9,10 +9,12 @@ import (
 )
 
 type remoteInfo struct {
-	size      int64
-	rangeable bool
-	suggested string
-	finalURL  string
+	size         int64
+	rangeable    bool
+	suggested    string
+	finalURL     string
+	etag         string
+	lastModified string
 }
 
 func (d *downloader) inspect(ctx context.Context) (remoteInfo, error) {
@@ -80,6 +82,8 @@ func (d *downloader) inspectHead(ctx context.Context) (remoteInfo, int) {
 		info.size = resp.ContentLength
 		info.suggested = filenameFromDisposition(resp.Header.Get("Content-Disposition"))
 		info.rangeable = strings.EqualFold(resp.Header.Get("Accept-Ranges"), "bytes")
+		info.etag = resp.Header.Get("ETag")
+		info.lastModified = resp.Header.Get("Last-Modified")
 	}
 	return info, resp.StatusCode
 }
@@ -118,20 +122,24 @@ func (d *downloader) probeRange(ctx context.Context, rawURL string) (remoteInfo,
 
 		if resp.StatusCode == http.StatusPartialContent {
 			return remoteInfo{
-				size:      parseContentRangeSize(resp.Header.Get("Content-Range")),
-				rangeable: true,
-				suggested: filenameFromDisposition(resp.Header.Get("Content-Disposition")),
-				finalURL:  resp.Request.URL.String(),
+				size:         parseContentRangeSize(resp.Header.Get("Content-Range")),
+				rangeable:    true,
+				suggested:    filenameFromDisposition(resp.Header.Get("Content-Disposition")),
+				finalURL:     resp.Request.URL.String(),
+				etag:         resp.Header.Get("ETag"),
+				lastModified: resp.Header.Get("Last-Modified"),
 			}, nil
 		}
 		if resp.StatusCode >= 400 {
 			return remoteInfo{}, fmt.Errorf("range probe failed: %s", resp.Status)
 		}
 		return remoteInfo{
-			size:      resp.ContentLength,
-			rangeable: false,
-			suggested: filenameFromDisposition(resp.Header.Get("Content-Disposition")),
-			finalURL:  resp.Request.URL.String(),
+			size:         resp.ContentLength,
+			rangeable:    false,
+			suggested:    filenameFromDisposition(resp.Header.Get("Content-Disposition")),
+			finalURL:     resp.Request.URL.String(),
+			etag:         resp.Header.Get("ETag"),
+			lastModified: resp.Header.Get("Last-Modified"),
 		}, nil
 	}
 	return remoteInfo{}, lastErr

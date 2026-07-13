@@ -30,6 +30,7 @@ type fileConfig struct {
 type downloadConfig struct {
 	Output       *string        `json:"output" yaml:"output" toml:"output"`
 	Force        *bool          `json:"force" yaml:"force" toml:"force"`
+	Resume       *bool          `json:"resume" yaml:"resume" toml:"resume"`
 	Connections  *int           `json:"connections" yaml:"connections" toml:"connections"`
 	Retry        *int           `json:"retry" yaml:"retry" toml:"retry"`
 	PartSize     *string        `json:"part-size" yaml:"part-size" toml:"part-size"`
@@ -65,6 +66,7 @@ func applyConfig(cmd *cobra.Command, opts *cliOptions) error {
 
 	applyValue(cmd, "output", &opts.output, config.Download.Output)
 	applyValue(cmd, "force", &opts.force, config.Download.Force)
+	applyValue(cmd, "resume", &opts.resume, config.Download.Resume)
 	applyValue(cmd, "connections", &opts.connections, config.Download.Connections)
 	applyValue(cmd, "retry", &opts.retries, config.Download.Retry)
 	applyValue(cmd, "part-size", &opts.partSize, config.Download.PartSize)

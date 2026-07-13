@@ -102,6 +102,9 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 		remoteStart := d.rangeOffset + offset
 		remoteEnd := d.rangeOffset + end
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", remoteStart, remoteEnd))
+		if validator := d.resumeValidator(); validator != "" {
+			req.Header.Set("If-Range", validator)
+		}
 		resp, err := client.Do(req)
 		probeTimer.stop()
 		conn, connKey := connInfo.snapshot()

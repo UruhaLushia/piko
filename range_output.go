@@ -2,6 +2,7 @@ package piko
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"sync"
@@ -11,41 +12,63 @@ const asyncWriteQueueSize = 128
 
 func (d *downloader) downloadParts(ctx context.Context, output string, size int64, partSize int64, concurrency int, force bool) error {
 	discard := IsNullOutput(output)
+	resume := d.resume
 	partPath := ""
 	var writer io.WriterAt = discardWriterAt{}
 	var file *os.File
 	var asyncWriter *asyncFileWriterAt
+	var tracker *resumeTracker
+	var pending []downloadSpan
+	var completed int64
 	if !discard {
 		partPath = output + ".part"
-		if err := prepareTemp(partPath); err != nil {
-			return err
-		}
-
 		var err error
-		file, err = os.OpenFile(partPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-		if err != nil {
-			return err
+		if resume {
+			var completedSpans []downloadSpan
+			file, completedSpans, tracker, err = openResumeFile(partPath, d.resumeIdentity(size))
+			if err != nil {
+				return err
+			}
+			pending = missingDownloadSpans(size, completedSpans)
+			completed = downloadSpanBytes(completedSpans)
+		} else {
+			if err := prepareTemp(partPath); err != nil {
+				return err
+			}
+			_ = os.Remove(resumeStatePath(partPath))
+			file, err = os.OpenFile(partPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+			if err != nil {
+				return err
+			}
+			if err := file.Truncate(size); err != nil {
+				file.Close()
+				_ = os.Remove(partPath)
+				return err
+			}
 		}
-		if err := file.Truncate(size); err != nil {
-			file.Close()
-			_ = os.Remove(partPath)
-			return err
+		var committed func(int64, int) error
+		if tracker != nil {
+			committed = tracker.Record
 		}
-		asyncWriter = newAsyncFileWriterAt(file)
+		asyncWriter = newAsyncFileWriterAt(file, committed)
 		writer = asyncWriter
 	}
 
-	err := d.downloadPartsToWriter(ctx, writer, size, partSize, concurrency)
+	var err error
+	if resume && !discard {
+		err = d.downloadPartsToWriterSpans(ctx, writer, size, partSize, concurrency, pending, completed)
+	} else {
+		err = d.downloadPartsToWriter(ctx, writer, size, partSize, concurrency)
+	}
 	if asyncWriter != nil {
-		if writeErr := asyncWriter.Close(); err == nil {
-			err = writeErr
-		}
+		err = preferOutputError(err, asyncWriter.Close())
 	}
-	if closeErr := closeFile(file); err == nil {
-		err = closeErr
+	if tracker != nil {
+		err = preferOutputError(err, tracker.Checkpoint())
 	}
+	err = preferOutputError(err, closeFile(file))
 	if err != nil {
-		if !discard {
+		if !discard && !resume {
 			_ = os.Remove(partPath)
 		}
 		return err
@@ -54,13 +77,25 @@ func (d *downloader) downloadParts(ctx context.Context, output string, size int6
 	if discard {
 		return nil
 	}
-	return finishOutput(partPath, output, force)
+	if err := finishOutput(partPath, output, force); err != nil {
+		return err
+	}
+	_ = os.Remove(resumeStatePath(partPath))
+	return nil
+}
+
+func preferOutputError(current, cleanup error) error {
+	if cleanup != nil && (current == nil || errors.Is(current, context.Canceled) || errors.Is(current, context.DeadlineExceeded)) {
+		return cleanup
+	}
+	return current
 }
 
 type asyncFileWriterAt struct {
-	file *os.File
-	ch   chan asyncFileWrite
-	done chan struct{}
+	file      *os.File
+	committed func(int64, int) error
+	ch        chan asyncFileWrite
+	done      chan struct{}
 
 	mu     sync.Mutex
 	err    error
@@ -72,11 +107,12 @@ type asyncFileWrite struct {
 	data   []byte
 }
 
-func newAsyncFileWriterAt(file *os.File) *asyncFileWriterAt {
+func newAsyncFileWriterAt(file *os.File, committed func(int64, int) error) *asyncFileWriterAt {
 	writer := &asyncFileWriterAt{
-		file: file,
-		ch:   make(chan asyncFileWrite, asyncWriteQueueSize),
-		done: make(chan struct{}),
+		file:      file,
+		committed: committed,
+		ch:        make(chan asyncFileWrite, asyncWriteQueueSize),
+		done:      make(chan struct{}),
 	}
 	go writer.run()
 	return writer
@@ -119,6 +155,10 @@ func (w *asyncFileWriterAt) run() {
 		}
 		if written != len(write.data) {
 			w.setError(io.ErrShortWrite)
+			continue
+		}
+		if w.committed != nil {
+			w.setError(w.committed(write.offset, written))
 		}
 	}
 }

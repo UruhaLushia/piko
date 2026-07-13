@@ -22,6 +22,7 @@ type Options struct {
 	Connections        int
 	Retries            int
 	Force              bool
+	Resume             bool
 	PartSize           int64
 	Timeout            time.Duration
 	StallTimeout       time.Duration
@@ -40,9 +41,10 @@ type Options struct {
 }
 
 type Progress struct {
-	Bytes int64
-	Total int64
-	Done  bool
+	Bytes   int64
+	Total   int64
+	Resumed int64
+	Done    bool
 }
 
 type Result struct {

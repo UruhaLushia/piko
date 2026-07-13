@@ -28,6 +28,9 @@ piko [flags] <url> [output]
 # 使用 32 个 range worker 下载
 piko -n 32 -o file.pkg https://example.com/file.pkg
 
+# 继续中断的下载
+piko -r -o file.pkg https://example.com/file.pkg
+
 # 只测速，不保存文件
 piko -n 32 -o NUL https://example.com/file.pkg
 piko -n 32 -o /dev/null https://example.com/file.pkg
@@ -70,6 +73,7 @@ piko --dns https://cloudflare-dns.com/dns-query https://example.com/file.pkg
     --config <path>             配置文件或配置目录，默认 ~/.piko
 -o, --output <path>             输出文件；Windows 可用 NUL 丢弃输出，Unix 可用 /dev/null
 -f, --force                     覆盖输出文件
+-r, --resume                    继续中断的 Range 下载
 -n, --connections <n>           并发连接数
     --retry <n>                 重试次数
 -s, --part-size <size>          初始分段大小，例如 4MiB
@@ -83,6 +87,8 @@ piko --dns https://cloudflare-dns.com/dns-query https://example.com/file.pkg
     --dns <dns>                 system、udp://、tcp://、dot:// 或 https:// DoH URL
 -A, --user-agent <ua>           User-Agent
 ```
+
+启用 `--resume` 后，piko 会使用 `file.pkg.part` 保存临时数据，并在 `file.pkg.part.resume` 中记录已完成的字节区间。再次使用相同 URL 和输出路径时，只下载缺失区间；复用前会检查远端大小以及 ETag 或 Last-Modified。
 
 ## 库
 
@@ -102,6 +108,7 @@ func main() {
 	result, err := piko.Download(context.Background(), "https://example.com/file.pkg", piko.Options{
 		Output:      "file.pkg",
 		Force:       true,
+		Resume:      true,
 		Connections: 16,
 	})
 	if err != nil {

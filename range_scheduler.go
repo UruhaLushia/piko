@@ -33,8 +33,7 @@ type partScheduler struct {
 	concurrency     int
 
 	mu             sync.Mutex
-	front          int64
-	back           int64
+	pending        []downloadSpan
 	index          int
 	workerDone     []int
 	workerSize     []int64
@@ -70,7 +69,7 @@ type activePart struct {
 	closeRequested bool
 }
 
-func newPartScheduler(size int64, initialPartSize int64, concurrency int) *partScheduler {
+func newPartScheduler(size int64, initialPartSize int64, concurrency int, pending []downloadSpan) *partScheduler {
 	if initialPartSize < 1 {
 		initialPartSize = DefaultPartSize
 	}
@@ -86,11 +85,16 @@ func newPartScheduler(size int64, initialPartSize int64, concurrency int) *partS
 		workerSize[i] = initialPartSize
 	}
 	maxActive, probe := newConcurrencyProbe(concurrency)
+	if pending == nil && size > 0 {
+		pending = []downloadSpan{{start: 0, end: size - 1}}
+	} else {
+		pending = normalizeDownloadSpans(append([]downloadSpan(nil), pending...))
+	}
 	scheduler := &partScheduler{
 		initialPartSize: initialPartSize,
 		maxPartSize:     maxPartSize,
 		concurrency:     concurrency,
-		back:            size - 1,
+		pending:         pending,
 		workerDone:      make([]int, concurrency),
 		workerSize:      workerSize,
 		partSizeHint:    initialPartSize,
@@ -170,21 +174,32 @@ func (s *partScheduler) popQueuedPartLocked() (part, bool) {
 }
 
 func (s *partScheduler) nextFreshPartLocked(workerID int) (part, bool) {
-	if s.front > s.back {
+	if len(s.pending) == 0 {
 		return part{}, false
 	}
 	index := s.index + 1
-	remaining := s.back - s.front + 1
+	remaining := downloadSpanBytes(s.pending)
 	partSize := s.basePartSizeLocked(workerID, remaining)
 	if index%2 == 0 {
-		end := s.back
-		start := max(end-partSize+1, s.front)
-		s.back = start - 1
+		last := len(s.pending) - 1
+		span := &s.pending[last]
+		partSize = min(partSize, span.length())
+		end := span.end
+		start := end - partSize + 1
+		span.end = start - 1
+		if span.end < span.start {
+			s.pending = s.pending[:last]
+		}
 		return part{start: start, end: end}, true
 	}
-	start := s.front
-	end := min(start+partSize-1, s.back)
-	s.front = end + 1
+	span := &s.pending[0]
+	partSize = min(partSize, span.length())
+	start := span.start
+	end := start + partSize - 1
+	span.start = end + 1
+	if span.start > span.end {
+		s.pending = s.pending[1:]
+	}
 	return part{start: start, end: end}, true
 }
 
@@ -225,7 +240,7 @@ func (s *partScheduler) hasPendingWork() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.moveReadyDelayedLocked()
-	if len(s.queue) > 0 || len(s.delayed) > 0 || s.front <= s.back {
+	if len(s.queue) > 0 || len(s.delayed) > 0 || len(s.pending) > 0 {
 		return true
 	}
 	for _, active := range s.active {

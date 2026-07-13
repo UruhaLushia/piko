@@ -55,6 +55,6 @@ func (d *downloader) emitProgress(total int64, done bool) {
 
 func (d *downloader) emitProgressWith(current int64, total int64, done bool) {
 	if d.progress != nil {
-		d.progress(Progress{Bytes: current, Total: total, Done: done})
+		d.progress(Progress{Bytes: current, Total: total, Resumed: d.resumed, Done: done})
 	}
 }

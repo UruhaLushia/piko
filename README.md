@@ -28,6 +28,9 @@ Examples:
 # Download with 32 range workers
 piko -n 32 -o file.pkg https://example.com/file.pkg
 
+# Resume an interrupted download
+piko -r -o file.pkg https://example.com/file.pkg
+
 # Speed test without saving
 piko -n 32 -o NUL https://example.com/file.pkg
 piko -n 32 -o /dev/null https://example.com/file.pkg
@@ -70,6 +73,7 @@ Useful flags:
     --config <path>             config file or directory (default ~/.piko)
 -o, --output <path>             output file; discard with NUL on Windows or /dev/null on Unix
 -f, --force                     overwrite output
+-r, --resume                    resume an interrupted range download
 -n, --connections <n>           parallel connections
     --retry <n>                 retry count
 -s, --part-size <size>          initial range part size, e.g. 4MiB
@@ -83,6 +87,8 @@ Useful flags:
     --dns <dns>                 system, udp://, tcp://, dot://, or https:// DoH URL
 -A, --user-agent <ua>           user agent
 ```
+
+With `--resume`, piko keeps completed byte ranges in `file.pkg.part` and `file.pkg.part.resume`. A later run with the same URL and output downloads only the missing ranges. Remote size and ETag or Last-Modified values are checked before reusing partial data.
 
 ## Library
 
@@ -102,6 +108,7 @@ func main() {
 	result, err := piko.Download(context.Background(), "https://example.com/file.pkg", piko.Options{
 		Output:      "file.pkg",
 		Force:       true,
+		Resume:      true,
 		Connections: 16,
 	})
 	if err != nil {

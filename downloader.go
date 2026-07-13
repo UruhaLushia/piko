@@ -19,14 +19,20 @@ type downloader struct {
 	client       *http.Client
 	clients      []*http.Client
 	selector     *dialer.Selector
+	sourceURL    string
 	url          string
 	ua           string
 	headers      http.Header
 	retries      int
 	stallTimeout time.Duration
 	progress     func(Progress)
+	resume       bool
+	resumed      int64
 	total        int64
+	remoteSize   int64
 	rangeOffset  int64
+	resumeETag   string
+	resumeTime   string
 
 	done atomic.Int64
 
@@ -130,12 +136,14 @@ func newDownloader(rawURL string, opts Options, client *http.Client, clients []*
 		client:       client,
 		clients:      clients,
 		selector:     selector,
+		sourceURL:    rawURL,
 		url:          rawURL,
 		ua:           opts.UserAgent,
 		headers:      opts.Headers,
 		retries:      opts.Retries,
 		stallTimeout: opts.StallTimeout,
 		progress:     opts.Progress,
+		resume:       opts.Resume,
 		rangeOffset:  opts.Offset,
 	}
 }
@@ -198,6 +206,9 @@ func (d *downloader) plan(ctx context.Context, opts Options, allowDiscard bool) 
 	if err != nil {
 		return Result{}, err
 	}
+	d.resumeETag = info.etag
+	d.resumeTime = info.lastModified
+	d.remoteSize = info.size
 	if info.finalURL != "" {
 		d.url = info.finalURL
 		if finalURL, err := url.Parse(info.finalURL); err == nil && finalURL.Scheme != "" && finalURL.Host != "" {
@@ -225,7 +236,7 @@ func (d *downloader) plan(ctx context.Context, opts Options, allowDiscard bool) 
 		}
 	}
 	parallel := connections > 1 && info.rangeable && selectionSize > 0
-	segmented := partial || parallel
+	segmented := partial || parallel || (opts.Resume && info.rangeable && selectionSize > 0)
 	if !segmented {
 		connections = 1
 	}

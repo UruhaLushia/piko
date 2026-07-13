@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -39,6 +40,7 @@ func run(ctx context.Context, rawURL string, opts cliOptions) error {
 	if err != nil {
 		return fmt.Errorf("--dns: %w", err)
 	}
+	parentCtx := ctx
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
 	defer stop()
 
@@ -49,6 +51,7 @@ func run(ctx context.Context, rawURL string, opts cliOptions) error {
 		Connections:        opts.connections,
 		Retries:            opts.retries,
 		Force:              opts.force,
+		Resume:             opts.resume,
 		PartSize:           partSize,
 		Timeout:            opts.timeout,
 		StallTimeout:       opts.stallTimeout,
@@ -71,6 +74,9 @@ func run(ctx context.Context, rawURL string, opts cliOptions) error {
 	elapsed := time.Since(startedAt)
 	if err != nil {
 		printer.Abort()
+		if errors.Is(err, context.Canceled) && ctx.Err() != nil && parentCtx.Err() == nil {
+			return nil
+		}
 		return fmt.Errorf("failed after %s: %w", formatDuration(elapsed), err)
 	}
 
@@ -79,7 +85,12 @@ func run(ctx context.Context, rawURL string, opts cliOptions) error {
 	if size <= 0 {
 		size = printer.Bytes()
 	}
-	fmt.Printf("finished: %s in %s, avg %s/s\n", formatBytes(size), formatDuration(elapsed), formatBytes(averageSpeed(size, elapsed)))
+	transferred := printer.Transferred()
+	transferElapsed := printer.Elapsed()
+	if transferElapsed <= 0 {
+		transferElapsed = elapsed
+	}
+	fmt.Printf("finished: %s in %s, avg %s/s\n", formatBytes(size), formatDuration(elapsed), formatBytes(averageSpeed(transferred, transferElapsed)))
 	if result.Discarded {
 		fmt.Println("discarded:", result.Output)
 	} else {
