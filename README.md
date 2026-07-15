@@ -63,14 +63,14 @@ piko --dns dot://cloudflare-dns.com https://example.com/file.pkg
 piko --dns https://cloudflare-dns.com/dns-query https://example.com/file.pkg
 ```
 
-Config is loaded from `~/.piko/config.yaml`, `~/.piko/config.yml`, `~/.piko/config.toml`, or `~/.piko/config.json`. CLI flags and positional output override config values.
+Config is loaded from `~/.config/piko` first, then `~/.piko`. Each directory supports `config.yaml`, `config.yml`, `config.toml`, or `config.json`. CLI flags and positional output override config values.
 
 See [examples/config.yaml](examples/config.yaml) for a complete config file.
 
 Useful flags:
 
 ```text
-    --config <path>             config file or directory (default ~/.piko)
+    --config <path>             config file or directory (default ~/.config/piko, then ~/.piko)
 -o, --output <path>             output file; discard with NUL on Windows or /dev/null on Unix
 -f, --force                     overwrite output
 -r, --resume                    resume an interrupted range download

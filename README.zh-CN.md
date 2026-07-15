@@ -63,14 +63,14 @@ piko --dns dot://cloudflare-dns.com https://example.com/file.pkg
 piko --dns https://cloudflare-dns.com/dns-query https://example.com/file.pkg
 ```
 
-配置会从 `~/.piko/config.yaml`、`~/.piko/config.yml`、`~/.piko/config.toml` 或 `~/.piko/config.json` 加载。CLI 参数和位置参数里的输出路径会覆盖配置值。
+配置会优先从 `~/.config/piko` 加载，未找到时再查找 `~/.piko`。两个目录均支持 `config.yaml`、`config.yml`、`config.toml` 和 `config.json`。CLI 参数和位置参数里的输出路径会覆盖配置值。
 
 完整配置示例见 [examples/config.yaml](examples/config.yaml)。
 
 常用参数：
 
 ```text
-    --config <path>             配置文件或配置目录，默认 ~/.piko
+    --config <path>             配置文件或配置目录，默认 ~/.config/piko，其次 ~/.piko
 -o, --output <path>             输出文件；Windows 可用 NUL 丢弃输出，Unix 可用 /dev/null
 -f, --force                     覆盖输出文件
 -r, --resume                    继续中断的 Range 下载

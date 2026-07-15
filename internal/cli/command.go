@@ -31,7 +31,7 @@ type cliOptions struct {
 func NewRootCommand() *cobra.Command {
 	defaults := piko.DefaultOptions()
 	opts := cliOptions{
-		config:       defaultConfigDir(),
+		config:       defaultConfigDir,
 		connections:  defaults.Connections,
 		retries:      defaults.Retries,
 		partSize:     formatBytes(defaults.PartSize),

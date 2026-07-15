@@ -1,5 +1,6 @@
 # piko config example.
-# Put this file at ~/.piko/config.yaml, or pass it with --config.
+# Put this file at ~/.config/piko/config.yaml (preferred) or ~/.piko/config.yaml,
+# or pass it with --config.
 # CLI flags and positional output override values here.
 
 download:

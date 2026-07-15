@@ -12,7 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const defaultConfigDirName = ".piko"
+const defaultConfigDir = "~/.config/piko"
 
 var configFileNames = []string{
 	"config.yaml",
@@ -51,12 +51,12 @@ type networkConfig struct {
 	IPFamily        *string          `json:"ip-family" yaml:"ip-family" toml:"ip-family"`
 }
 
-func defaultConfigDir() string {
-	return "~/" + defaultConfigDirName
-}
-
 func applyConfig(cmd *cobra.Command, opts *cliOptions) error {
-	config, err := readConfig(opts.config, cmd.Flags().Changed("config"))
+	required := cmd.Flags().Changed("config")
+	config, err := readConfig(opts.config, required)
+	if err == nil && config == nil && !required {
+		config, err = readConfig("~/.piko", false)
+	}
 	if err != nil {
 		return err
 	}
