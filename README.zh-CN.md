@@ -28,6 +28,9 @@ piko [flags] <url> [output]
 # 使用 32 个 range worker 下载
 piko -n 32 -o file.pkg https://example.com/file.pkg
 
+# 禁用并发回退，全程使用全部 32 个 worker
+piko -n 32 --no-fallback -o file.pkg https://example.com/file.pkg
+
 # 继续中断的下载
 piko -r -o file.pkg https://example.com/file.pkg
 
@@ -74,6 +77,7 @@ piko --dns https://cloudflare-dns.com/dns-query https://example.com/file.pkg
 -o, --output <path>             输出文件；Windows 可用 NUL 丢弃输出，Unix 可用 /dev/null
 -f, --force                     覆盖输出文件
 -r, --resume                    继续中断的 Range 下载
+    --no-fallback               禁用并发回退，全程使用全部连接
 -n, --connections <n>           并发连接数
     --retry <n>                 重试次数
 -s, --part-size <size>          初始分段大小，例如 4MiB
@@ -110,6 +114,7 @@ func main() {
 		Force:       true,
 		Resume:      true,
 		Connections: 16,
+		NoFallback:  true,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -117,6 +122,8 @@ func main() {
 	log.Printf("saved %s from %s", result.Output, result.FinalURL)
 }
 ```
+
+`NoFallback` 会立即启用全部 Range worker，并禁止自适应降低并发数。
 
 返回字节，由调用方自行保存或转发：
 

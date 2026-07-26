@@ -52,6 +52,7 @@ func run(ctx context.Context, rawURL string, opts cliOptions) error {
 		Retries:            opts.retries,
 		Force:              opts.force,
 		Resume:             opts.resume,
+		NoFallback:         opts.noFallback,
 		PartSize:           partSize,
 		Timeout:            opts.timeout,
 		StallTimeout:       opts.stallTimeout,

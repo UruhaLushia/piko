@@ -28,6 +28,9 @@ Examples:
 # Download with 32 range workers
 piko -n 32 -o file.pkg https://example.com/file.pkg
 
+# Always use all 32 workers without adaptive concurrency fallback
+piko -n 32 --no-fallback -o file.pkg https://example.com/file.pkg
+
 # Resume an interrupted download
 piko -r -o file.pkg https://example.com/file.pkg
 
@@ -74,6 +77,7 @@ Useful flags:
 -o, --output <path>             output file; discard with NUL on Windows or /dev/null on Unix
 -f, --force                     overwrite output
 -r, --resume                    resume an interrupted range download
+    --no-fallback               always use all parallel connections
 -n, --connections <n>           parallel connections
     --retry <n>                 retry count
 -s, --part-size <size>          initial range part size, e.g. 4MiB
@@ -110,6 +114,7 @@ func main() {
 		Force:       true,
 		Resume:      true,
 		Connections: 16,
+		NoFallback:  true,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -117,6 +122,8 @@ func main() {
 	log.Printf("saved %s from %s", result.Output, result.FinalURL)
 }
 ```
+
+`NoFallback` starts all configured range workers immediately and prevents adaptive concurrency reduction.
 
 Return bytes for your own storage or transport:
 

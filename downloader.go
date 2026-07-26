@@ -27,6 +27,7 @@ type downloader struct {
 	stallTimeout time.Duration
 	progress     func(Progress)
 	resume       bool
+	noFallback   bool
 	resumed      int64
 	total        int64
 	remoteSize   int64
@@ -144,6 +145,7 @@ func newDownloader(rawURL string, opts Options, client *http.Client, clients []*
 		stallTimeout: opts.StallTimeout,
 		progress:     opts.Progress,
 		resume:       opts.Resume,
+		noFallback:   opts.NoFallback,
 		rangeOffset:  opts.Offset,
 	}
 }

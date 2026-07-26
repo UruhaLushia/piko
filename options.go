@@ -23,6 +23,7 @@ type Options struct {
 	Retries            int
 	Force              bool
 	Resume             bool
+	NoFallback         bool
 	PartSize           int64
 	Timeout            time.Duration
 	StallTimeout       time.Duration

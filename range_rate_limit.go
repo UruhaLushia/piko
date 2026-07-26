@@ -12,6 +12,10 @@ const (
 )
 
 func (s *partScheduler) limitForRateLimit(delay time.Duration) {
+	if s.noFallback {
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
