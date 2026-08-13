@@ -22,7 +22,19 @@ func (s *partScheduler) record(workerID int, bytes int64, elapsed time.Duration)
 	defer s.mu.Unlock()
 	s.adjustPartSizeLocked(workerID, bytes, elapsed)
 	s.updatePartSizeHintLocked(s.workerPartSizeLocked(workerID))
+	s.updateWorkerRateLocked(workerID, float64(bytes)/elapsed.Seconds())
 	s.workerDone[workerID]++
+}
+
+func (s *partScheduler) updateWorkerRateLocked(workerID int, rate float64) {
+	if workerID < 0 || workerID >= len(s.workerRate) || rate <= 0 {
+		return
+	}
+	if s.workerRate[workerID] <= 0 {
+		s.workerRate[workerID] = rate
+		return
+	}
+	s.workerRate[workerID] = s.workerRate[workerID]*(1-workerRateSmooth) + rate*workerRateSmooth
 }
 
 func (s *partScheduler) penalize(workerID int) {

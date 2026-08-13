@@ -115,6 +115,10 @@ func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFun
 				}
 				if now.Sub(lastCheck) >= checkInterval {
 					speed := float64(*offset-lastOffset) / now.Sub(lastCheck).Seconds()
+					active.mu.Lock()
+					active.recentRate = speed
+					active.recentRateAt = now
+					active.mu.Unlock()
 					avg, peers := d.updateRangeSpeed(speedID, speed)
 					slow := shouldCloseSlowConnection(speed, avg, peers, now.Sub(started), *offset-requestStart, remaining)
 					if slow && remaining <= slowTailWindow {
