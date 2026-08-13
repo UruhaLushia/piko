@@ -58,7 +58,7 @@ func closeConn(conn net.Conn) {
 	}
 }
 
-func (d *downloader) downloadRange(ctx context.Context, client *http.Client, writer io.WriterAt, active *activePart, probeIdleTimeout time.Duration, confirmProbe func()) (int64, error) {
+func (d *downloader) downloadRange(ctx context.Context, client *http.Client, writer io.WriterAt, active *activePart, probeIdleTimeout time.Duration, probeProgress func(int64)) (int64, error) {
 	p := active.part
 	offset := p.start
 	var lastErr error
@@ -133,7 +133,7 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 				return offset, err
 			}
 		} else {
-			err = d.copyRange(attemptCtx, attemptCancel, writer, resp, p.index, attemptStart, end, remoteStart, remoteEnd, &offset, active, partLease(p), conn, probeIdleTimeout, confirmProbe)
+			err = d.copyRange(attemptCtx, attemptCancel, writer, resp, p.index, attemptStart, end, remoteStart, remoteEnd, &offset, active, partLease(p), conn, probeIdleTimeout, probeProgress)
 			attemptCanceled := attemptCtx.Err() != nil
 			if shouldCloseRangeConnection(err, offset, end, active.end.Load()) {
 				abortAttempt()

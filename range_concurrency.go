@@ -1,31 +1,35 @@
 package piko
 
-import "time"
-
-const (
-	minimumActiveConnections   = 2
-	concurrencyProbeConfirm    = 64 * 1024
-	concurrencyProbeLowWindow  = time.Second
-	concurrencyProbeHighWindow = 2 * time.Second
+import (
+	"sort"
+	"time"
 )
 
-// Confirmed workers keep downloading while new slots probe the next concurrency level.
+const (
+	minimumActiveConnections = 2
+	concurrencyProbeWindow   = time.Second
+	concurrencyProbeRatio    = 0.35
+)
+
+// Startup uses all requested workers, then keeps only connections with
+// sustained progress during the sampling window.
 type concurrencyProbe struct {
-	generation int
-	candidate  int
-	samples    int
-	seen       []bool
+	bytes      []int64
+	enabled    []bool
 	timer      *time.Timer
+	timerEpoch int
 	done       bool
 }
 
 func newConcurrencyProbe(concurrency int) (int, concurrencyProbe) {
-	candidate := min(concurrency, minimumActiveConnections)
-	return candidate, concurrencyProbe{
-		generation: 1,
-		candidate:  candidate,
-		seen:       make([]bool, concurrency),
-		done:       concurrency <= minimumActiveConnections,
+	enabled := make([]bool, concurrency)
+	for workerID := range enabled {
+		enabled[workerID] = true
+	}
+	return concurrency, concurrencyProbe{
+		bytes:   make([]int64, concurrency),
+		enabled: enabled,
+		done:    concurrency <= minimumActiveConnections,
 	}
 }
 
@@ -34,63 +38,88 @@ func (p *concurrencyProbe) active() bool {
 }
 
 func (p *concurrencyProbe) workerPending(workerID int) bool {
-	return p.active() && workerID >= 0 && workerID < p.candidate && !p.seen[workerID]
+	return p.active() && p.workerEnabled(workerID) && p.bytes[workerID] == 0
 }
 
-func (s *partScheduler) confirmConcurrencyProbe(workerID int, generation int) {
+func (p *concurrencyProbe) workerEnabled(workerID int) bool {
+	return workerID >= 0 && workerID < len(p.enabled) && p.enabled[workerID]
+}
+
+func (s *partScheduler) recordConcurrencyProbe(workerID int, bytes int64) {
+	if bytes <= 0 {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !s.probe.active() || s.rateLimited || generation != s.probe.generation ||
-		workerID < 0 || workerID >= len(s.probe.seen) || s.probe.seen[workerID] {
+	if !s.probe.active() || s.rateLimited || !s.probe.workerEnabled(workerID) {
 		return
 	}
-
-	s.probe.seen[workerID] = true
-	s.probe.samples++
-	if s.probe.samples >= s.probe.candidate {
-		if s.probe.candidate < s.concurrency {
-			s.expandConcurrencyProbeLocked()
-			return
-		}
-		s.stopConcurrencyProbeLocked()
+	s.probe.bytes[workerID] += bytes
+	if s.probe.timer == nil {
+		s.resetConcurrencyProbeTimerLocked()
 	}
 }
 
-func (s *partScheduler) expandConcurrencyProbeLocked() {
-	s.probe.candidate = min(s.concurrency, s.probe.candidate*2)
-	s.maxActive = s.probe.candidate
-	s.probe.generation++
-	s.resetConcurrencyProbeTimerLocked()
+func (s *partScheduler) workerEnabled(workerID int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.probe.workerEnabled(workerID)
 }
 
 func (s *partScheduler) probeAllowsWorkerLocked(workerID int) bool {
-	if !s.probe.active() {
-		return true
-	}
-	if workerID < 0 || workerID >= s.probe.candidate {
-		return false
-	}
-	if s.probe.workerPending(workerID) {
-		return true
-	}
-	for pendingID := 0; pendingID < s.probe.candidate; pendingID++ {
-		if s.probe.workerPending(pendingID) && s.active[pendingID] == nil {
-			return false
-		}
-	}
-	return true
+	return s.probe.workerEnabled(workerID)
 }
 
 func (s *partScheduler) limitConcurrencyProbeLocked() {
-	s.maxActive = s.probe.observedLimit()
-	s.closeExcessProbeConnectionsLocked(s.maxActive)
+	s.setConcurrencyLimitLocked(s.probe.preferredLimit())
 	s.stopConcurrencyProbeLocked()
 }
 
-func (p *concurrencyProbe) observedLimit() int {
-	minimum := min(p.candidate, minimumActiveConnections)
-	return min(p.candidate, max(minimum, p.samples))
+func (p *concurrencyProbe) preferredLimit() int {
+	total := int64(0)
+	productive := 0
+	for _, bytes := range p.bytes {
+		if bytes > 0 {
+			total += bytes
+			productive++
+		}
+	}
+	if productive == 0 {
+		return min(len(p.enabled), minimumActiveConnections)
+	}
+
+	minimum := float64(total) / float64(productive) * concurrencyProbeRatio
+	preferred := 0
+	for _, bytes := range p.bytes {
+		if float64(bytes) >= minimum {
+			preferred++
+		}
+	}
+	return min(len(p.enabled), max(preferred, min(len(p.enabled), minimumActiveConnections)))
+}
+
+func (s *partScheduler) setConcurrencyLimitLocked(limit int) {
+	limit = min(s.concurrency, max(limit, min(s.concurrency, minimumActiveConnections)))
+	s.probe.enabled = s.probe.fastestWorkers(limit)
+	s.maxActive = limit
+	s.closeExcessProbeConnectionsLocked(s.probe.enabled)
+}
+
+func (p *concurrencyProbe) fastestWorkers(limit int) []bool {
+	workers := make([]int, len(p.bytes))
+	for workerID := range workers {
+		workers[workerID] = workerID
+	}
+	sort.SliceStable(workers, func(i, j int) bool {
+		return p.bytes[workers[i]] > p.bytes[workers[j]]
+	})
+
+	enabled := make([]bool, len(p.enabled))
+	for _, workerID := range workers[:min(limit, len(workers))] {
+		enabled[workerID] = true
+	}
+	return enabled
 }
 
 func (s *partScheduler) stopConcurrencyProbeLocked() {
@@ -101,26 +130,16 @@ func (s *partScheduler) stopConcurrencyProbeLocked() {
 	s.probe.done = true
 }
 
-func (s *partScheduler) startConcurrencyProbeTimer() {
-	if !s.probe.active() {
-		return
-	}
-	s.resetConcurrencyProbeTimerLocked()
-}
-
 func (s *partScheduler) resetConcurrencyProbeTimerLocked() {
 	if s.probe.timer != nil {
 		s.probe.timer.Stop()
 	}
-	generation := s.probe.generation
-	window := concurrencyProbeLowWindow
-	if s.probe.candidate > minimumActiveConnections*2 {
-		window = concurrencyProbeHighWindow
-	}
-	s.probe.timer = time.AfterFunc(window, func() {
+	s.probe.timerEpoch++
+	timerEpoch := s.probe.timerEpoch
+	s.probe.timer = time.AfterFunc(concurrencyProbeWindow, func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		if !s.probe.active() || s.probe.generation != generation {
+		if !s.probe.active() || s.probe.timerEpoch != timerEpoch {
 			return
 		}
 		s.limitConcurrencyProbeLocked()
@@ -131,20 +150,9 @@ func (s *partScheduler) resetConcurrencyProbeTimerLocked() {
 	})
 }
 
-func (s *partScheduler) closeExcessProbeConnectionsLocked(limit int) {
-	kept := 0
+func (s *partScheduler) closeExcessProbeConnectionsLocked(keep []bool) {
 	for workerID, active := range s.active {
-		if active == nil || workerID >= len(s.probe.seen) || !s.probe.seen[workerID] {
-			continue
-		}
-		if kept < limit {
-			kept++
-			continue
-		}
-		active.closeConnection()
-	}
-	for workerID, active := range s.active {
-		if active != nil && (workerID >= len(s.probe.seen) || !s.probe.seen[workerID]) {
+		if active != nil && (workerID >= len(keep) || !keep[workerID]) {
 			active.closeConnection()
 		}
 	}

@@ -21,7 +21,6 @@ func (s *partScheduler) limitForRateLimit(delay time.Duration) {
 
 	s.normalizeMaxActiveLocked()
 	probing := s.probe.active()
-	s.stopConcurrencyProbeLocked()
 	if delay < rateLimitCooldown {
 		delay = rateLimitCooldown
 	}
@@ -52,7 +51,7 @@ func (s *partScheduler) recoverRateLimitLocked(now time.Time) {
 	if !s.rateLimited || s.maxActive >= s.concurrency || now.Before(s.recoverAt) {
 		return
 	}
-	s.maxActive++
+	s.setConcurrencyLimitLocked(s.maxActive + 1)
 	s.probeLimit = s.maxActive
 	s.recoverAt = now.Add(rateLimitRecover)
 }
@@ -87,7 +86,7 @@ func (s *partScheduler) rejectRateProbe(delay time.Duration) {
 		s.limitConcurrencyProbeLocked()
 		s.rateLimited = true
 	} else if s.probeLimit == s.maxActive && s.maxActive > minimumActiveConnections {
-		s.maxActive--
+		s.setConcurrencyLimitLocked(s.maxActive - 1)
 	}
 	s.clearRateProbeLocked()
 	s.extendRecoveryLocked(time.Now(), delay)
@@ -95,7 +94,7 @@ func (s *partScheduler) rejectRateProbe(delay time.Duration) {
 
 func (s *partScheduler) backoffConcurrencyLocked() {
 	minimum := min(s.concurrency, minimumActiveConnections)
-	s.maxActive = max(minimum, s.maxActive/2)
+	s.setConcurrencyLimitLocked(max(minimum, s.maxActive/2))
 }
 
 func (s *partScheduler) normalizeMaxActiveLocked() {

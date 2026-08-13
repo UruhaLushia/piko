@@ -59,6 +59,9 @@ func (d *downloader) runPartWorker(ctx context.Context, scheduler *partScheduler
 		}
 		active, ok := scheduler.nextPart(workerID)
 		if !ok {
+			if !scheduler.workerEnabled(workerID) {
+				client.CloseIdleConnections()
+			}
 			if scheduler.hasPendingWork() {
 				if err := sleepWithContext(ctx, idlePartPoll); err != nil {
 					return nil
@@ -70,13 +73,13 @@ func (d *downloader) runPartWorker(ctx context.Context, scheduler *partScheduler
 
 		p := active.part
 		started := time.Now()
-		var confirmProbe func()
+		var probeProgress func(int64)
 		if p.concurrencyProbe {
-			confirmProbe = func() {
-				scheduler.confirmConcurrencyProbe(workerID, active.probeID)
+			probeProgress = func(bytes int64) {
+				scheduler.recordConcurrencyProbe(workerID, bytes)
 			}
 		}
-		offset, err := d.downloadRange(ctx, client, writer, active, p.probeIdleTimeout(), confirmProbe)
+		offset, err := d.downloadRange(ctx, client, writer, active, p.probeIdleTimeout(), probeProgress)
 		scheduler.finish(workerID, active)
 		if err != nil {
 			p.end = active.end.Load()

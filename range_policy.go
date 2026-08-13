@@ -41,9 +41,6 @@ func (d *downloader) planRangeRetry(scheduler *partScheduler, workerID int, p pa
 }
 
 func (p part) probeIdleTimeout() time.Duration {
-	if p.concurrencyProbe {
-		return concurrencyProbeHighWindow
-	}
 	if !p.rateProbe {
 		return 0
 	}

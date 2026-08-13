@@ -10,8 +10,8 @@ const (
 	slowConnectionStrikes       = 2
 	slowConnectionMinPeers      = 4
 	slowTailWindow              = 2 * 1024 * 1024
-	slowTailMinAge              = 4 * time.Second
-	slowTailMinBytes            = 256 * 1024
+	slowTailCheckInterval       = time.Second
+	slowTailMinAge              = 2 * time.Second
 	slowTailIdleTimeout         = time.Second
 )
 

@@ -62,7 +62,6 @@ type activePart struct {
 	mu             sync.Mutex
 	part           part
 	started        time.Time
-	probeID        int
 	offset         atomic.Int64
 	end            atomic.Int64
 	connMu         sync.Mutex
@@ -108,7 +107,6 @@ func newPartScheduler(size int64, initialPartSize int64, concurrency int, pendin
 		active:          make([]*activePart, concurrency),
 		probe:           probe,
 	}
-	scheduler.startConcurrencyProbeTimer()
 	return scheduler
 }
 
@@ -218,7 +216,7 @@ func (s *partScheduler) activateNextLocked(workerID int, p part) *activePart {
 }
 
 func (s *partScheduler) activateLocked(workerID int, p part) *activePart {
-	active := &activePart{part: p, started: time.Now(), probeID: s.probe.generation}
+	active := &activePart{part: p, started: time.Now()}
 	active.offset.Store(p.start)
 	active.end.Store(p.end)
 

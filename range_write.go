@@ -15,7 +15,7 @@ const (
 	maxBufferedRangeSize = 512 * 1024
 )
 
-func (d *downloader) copyRange(ctx context.Context, cancel context.CancelFunc, writer io.WriterAt, resp *http.Response, partIndex int, requestStart int64, requestEnd int64, remoteStart int64, remoteEnd int64, offset *int64, active *activePart, lease time.Duration, conn net.Conn, probeIdleTimeout time.Duration, confirmProbe func()) error {
+func (d *downloader) copyRange(ctx context.Context, cancel context.CancelFunc, writer io.WriterAt, resp *http.Response, partIndex int, requestStart int64, requestEnd int64, remoteStart int64, remoteEnd int64, offset *int64, active *activePart, lease time.Duration, conn net.Conn, probeIdleTimeout time.Duration, probeProgress func(int64)) error {
 	if resp.StatusCode != http.StatusPartialContent {
 		return httpStatusError{partIndex: partIndex, code: resp.StatusCode, status: resp.Status}
 	}
@@ -24,7 +24,7 @@ func (d *downloader) copyRange(ctx context.Context, cancel context.CancelFunc, w
 	}
 
 	buffered := shouldBufferRangeWrite(writer, requestEnd-requestStart+1)
-	return d.copyRangeBody(ctx, cancel, writer, resp.Body, requestStart, offset, active, lease, conn, buffered, probeIdleTimeout, confirmProbe)
+	return d.copyRangeBody(ctx, cancel, writer, resp.Body, requestStart, offset, active, lease, conn, buffered, probeIdleTimeout, probeProgress)
 }
 
 func shouldBufferRangeWrite(writer io.WriterAt, size int64) bool {
@@ -39,7 +39,7 @@ func shouldBufferRangeWrite(writer io.WriterAt, size int64) bool {
 	}
 }
 
-func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFunc, writer io.WriterAt, reader io.Reader, requestStart int64, offset *int64, active *activePart, lease time.Duration, conn net.Conn, buffered bool, probeIdleTimeout time.Duration, confirmProbe func()) error {
+func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFunc, writer io.WriterAt, reader io.Reader, requestStart int64, offset *int64, active *activePart, lease time.Duration, conn net.Conn, buffered bool, probeIdleTimeout time.Duration, probeProgress func(int64)) error {
 	state := rangeWriteState{
 		d:        d,
 		writer:   writer,
@@ -72,7 +72,6 @@ func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFun
 	lastCheck := started
 	lastOffset := *offset
 	slowStrikes := 0
-	probeConfirmed := false
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -104,17 +103,25 @@ func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFun
 			if writeErr != nil {
 				return writeErr
 			}
-			if *offset-requestStart >= concurrencyProbeConfirm && !probeConfirmed && confirmProbe != nil {
-				confirmProbe()
-				probeConfirmed = true
+			if probeProgress != nil {
+				probeProgress(writeSize)
 			}
 			if writeSize > 0 {
 				now := time.Now()
-				if now.Sub(lastCheck) >= slowConnectionCheckInterval {
+				remaining := active.end.Load() - *offset + 1
+				checkInterval := slowConnectionCheckInterval
+				if remaining <= slowTailWindow {
+					checkInterval = slowTailCheckInterval
+				}
+				if now.Sub(lastCheck) >= checkInterval {
 					speed := float64(*offset-lastOffset) / now.Sub(lastCheck).Seconds()
 					avg, peers := d.updateRangeSpeed(speedID, speed)
-					remaining := active.end.Load() - *offset + 1
-					if shouldCloseSlowConnection(speed, avg, peers, now.Sub(started), *offset-requestStart, remaining) {
+					slow := shouldCloseSlowConnection(speed, avg, peers, now.Sub(started), *offset-requestStart, remaining)
+					if slow && remaining <= slowTailWindow {
+						abort()
+						return state.finish(dialer.ErrSlowConnection)
+					}
+					if slow {
 						slowStrikes++
 					} else {
 						slowStrikes = 0
@@ -230,7 +237,6 @@ func shouldCloseSlowConnection(speed float64, avg float64, peers int, age time.D
 	return remaining > 0 &&
 		remaining <= slowTailWindow &&
 		age >= slowTailMinAge &&
-		bytes >= slowTailMinBytes &&
 		speed > 0 &&
 		speed < minLeasedPartSpeed
 }
