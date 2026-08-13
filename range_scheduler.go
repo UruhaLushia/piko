@@ -22,6 +22,8 @@ type part struct {
 	start            int64
 	end              int64
 	requeues         int
+	slowRetries      int
+	allowSlow        bool
 	rateProbe        bool
 	concurrencyProbe bool
 }
@@ -308,14 +310,18 @@ func (s *partScheduler) stealPartLocked(workerID int) (part, bool) {
 		chosen.end.Store(start - 1)
 		chosen.closeConnection()
 		return part{
-			start:    start,
-			end:      oldEnd,
-			requeues: chosen.part.requeues + 1,
+			start:       start,
+			end:         oldEnd,
+			requeues:    chosen.part.requeues + 1,
+			slowRetries: chosen.part.slowRetries,
+			allowSlow:   chosen.part.allowSlow,
 		}, true
 	}
 	stolen := part{
-		requeues: chosen.part.requeues,
-		end:      oldEnd,
+		requeues:    chosen.part.requeues,
+		slowRetries: chosen.part.slowRetries,
+		allowSlow:   chosen.part.allowSlow,
+		end:         oldEnd,
 	}
 	helperRate := s.workerRateForLocked(workerID)
 	stolenSize := splitPartSize(remaining, victimRate, helperRate)
@@ -410,7 +416,13 @@ func (s *partScheduler) requeue(p part, offset int64, maxRequeues int, delay tim
 	chunks := make([]part, 0, (p.length()+chunkSize-1)/chunkSize)
 	for start := p.start; start <= p.end; {
 		end := min(start+chunkSize-1, p.end)
-		chunks = append(chunks, part{start: start, end: end, requeues: p.requeues})
+		chunks = append(chunks, part{
+			start:       start,
+			end:         end,
+			requeues:    p.requeues,
+			slowRetries: p.slowRetries,
+			allowSlow:   p.allowSlow,
+		})
 		start = end + 1
 	}
 	for _, chunk := range slices.Backward(chunks) {

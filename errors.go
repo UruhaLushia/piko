@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/UruhaLushia/piko/internal/dialer"
 )
 
 const statusBandwidthLimitExceeded = 509
@@ -91,6 +93,10 @@ func isRateLimitedDownloadError(err error) bool {
 
 func isRateProbeTimeout(err error) bool {
 	return errors.Is(err, errRateProbeTimeout)
+}
+
+func isSlowConnectionError(err error) bool {
+	return errors.Is(err, dialer.ErrSlowConnection)
 }
 
 func isTransientNetworkError(err error) bool {

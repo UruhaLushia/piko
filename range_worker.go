@@ -86,6 +86,10 @@ func (d *downloader) runPartWorker(ctx context.Context, scheduler *partScheduler
 			if offset <= p.end {
 				if ctx.Err() == nil && isRetryableDownloadError(err) {
 					retry := d.planRangeRetry(scheduler, workerID, p, offset, partSize, err)
+					if isSlowConnectionError(err) {
+						p.slowRetries++
+						p.allowSlow = p.slowRetries >= slowConnectionRetryLimit
+					}
 					if scheduler.requeue(p, offset, retry.maxRequeues, retry.delay) {
 						continue
 					}

@@ -6,8 +6,9 @@ import (
 )
 
 const (
-	rangeLease         = 12 * time.Second
-	minLeasedPartSpeed = 64 * 1024
+	rangeLease               = 12 * time.Second
+	minLeasedPartSpeed       = 64 * 1024
+	slowConnectionRetryLimit = 3
 )
 
 type rangeRetryPlan struct {
@@ -28,6 +29,9 @@ func (d *downloader) planRangeRetry(scheduler *partScheduler, workerID int, p pa
 	case isRateProbeTimeout(err):
 		plan.maxRequeues = max(d.retries*16, 64)
 		scheduler.rejectRateProbe(rateLimitRecover)
+	case isSlowConnectionError(err):
+		plan.maxRequeues = max(d.retries*24, 96)
+		scheduler.penalize(workerID)
 	case isTransientRangeError(err):
 		plan.maxRequeues = max(d.retries*24, 96)
 		if p.requeues >= d.retries {
@@ -41,7 +45,7 @@ func (d *downloader) planRangeRetry(scheduler *partScheduler, workerID int, p pa
 }
 
 func (p part) probeIdleTimeout() time.Duration {
-	if !p.rateProbe {
+	if p.allowSlow || !p.rateProbe {
 		return 0
 	}
 	return rateLimitIdle
@@ -81,6 +85,9 @@ func (p *idleTimer) expired() bool {
 }
 
 func partLease(p part) time.Duration {
+	if p.allowSlow || p.requeues > 0 {
+		return 0
+	}
 	if p.requeues == 0 && p.length() > slowTailWindow {
 		return 0
 	}
@@ -94,9 +101,6 @@ func partLease(p part) time.Duration {
 	}
 	if p.length() <= minDynamicPartSize && lease < rangeLease/2 {
 		lease = rangeLease / 2
-	}
-	if p.requeues > 0 {
-		lease = lease / time.Duration(p.requeues+1)
 	}
 	if lease < 4*time.Second {
 		return 4 * time.Second

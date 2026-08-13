@@ -85,7 +85,7 @@ func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFun
 		if *offset > end {
 			return state.flush()
 		}
-		if probeIdleTimeout <= 0 && tailTimer == nil && end-*offset+1 <= slowTailWindow {
+		if !active.part.allowSlow && probeIdleTimeout <= 0 && tailTimer == nil && end-*offset+1 <= slowTailWindow {
 			tailTimer = newIdleTimer(slowTailIdleTimeout, abort)
 		}
 		readSize := min(int64(len(buf)), end-*offset+1)
@@ -120,7 +120,7 @@ func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFun
 					active.recentRateAt = now
 					active.mu.Unlock()
 					avg, peers := d.updateRangeSpeed(speedID, speed)
-					slow := shouldCloseSlowConnection(speed, avg, peers, now.Sub(started), *offset-requestStart, remaining)
+					slow := !active.part.allowSlow && shouldCloseSlowConnection(speed, avg, peers, now.Sub(started), *offset-requestStart, remaining)
 					if slow && remaining <= slowTailWindow {
 						abort()
 						return state.finish(dialer.ErrSlowConnection)
@@ -241,8 +241,10 @@ func shouldCloseSlowConnection(speed float64, avg float64, peers int, age time.D
 	return remaining > 0 &&
 		remaining <= slowTailWindow &&
 		age >= slowTailMinAge &&
+		peers >= 2 &&
+		avg > 0 &&
 		speed > 0 &&
-		speed < minLeasedPartSpeed
+		speed < avg*slowConnectionRatio
 }
 
 type discardWriterAt struct{}
