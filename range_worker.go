@@ -22,7 +22,7 @@ func (d *downloader) downloadPartsToWriterSpans(ctx context.Context, writer io.W
 	d.done.Store(completed)
 	d.emitProgress(size, false)
 	errCh := make(chan error, 1)
-	scheduler := newPartScheduler(size, partSize, concurrency, pending, d.noFallback)
+	scheduler := newPartScheduler(size, partSize, concurrency, pending, d.concurrencyStrategy)
 
 	var wg sync.WaitGroup
 	for workerID := range concurrency {

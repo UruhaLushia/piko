@@ -36,7 +36,7 @@ type partScheduler struct {
 	initialPartSize int64
 	maxPartSize     int64
 	concurrency     int
-	noFallback      bool
+	strategy        ConcurrencyStrategy
 
 	mu             sync.Mutex
 	pending        []downloadSpan
@@ -77,7 +77,7 @@ type activePart struct {
 	closeRequested bool
 }
 
-func newPartScheduler(size int64, initialPartSize int64, concurrency int, pending []downloadSpan, noFallback bool) *partScheduler {
+func newPartScheduler(size int64, initialPartSize int64, concurrency int, pending []downloadSpan, strategy ConcurrencyStrategy) *partScheduler {
 	if initialPartSize < 1 {
 		initialPartSize = DefaultPartSize
 	}
@@ -93,7 +93,7 @@ func newPartScheduler(size int64, initialPartSize int64, concurrency int, pendin
 		workerSize[i] = initialPartSize
 	}
 	maxActive, probe := newConcurrencyProbe(concurrency)
-	if noFallback {
+	if strategy != ConcurrencyStrategyAdaptive {
 		maxActive = concurrency
 		probe.done = true
 	}
@@ -106,7 +106,7 @@ func newPartScheduler(size int64, initialPartSize int64, concurrency int, pendin
 		initialPartSize: initialPartSize,
 		maxPartSize:     maxPartSize,
 		concurrency:     concurrency,
-		noFallback:      noFallback,
+		strategy:        strategy,
 		pending:         pending,
 		workerDone:      make([]int, concurrency),
 		workerSize:      workerSize,

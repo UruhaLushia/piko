@@ -9,8 +9,8 @@ download:
   force: false
   # Keep .part data and resume completed byte ranges after interruption.
   resume: true
-  # Always use all configured connections without adaptive concurrency fallback.
-  no-fallback: false
+  # fixed (default) always uses all connections; adaptive may reduce concurrency.
+  concurrency-strategy: fixed
   connections: 32
   retry: 3
   # Initial range part size. piko adjusts later parts automatically.

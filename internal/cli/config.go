@@ -28,15 +28,15 @@ type fileConfig struct {
 }
 
 type downloadConfig struct {
-	Output       *string        `json:"output" yaml:"output" toml:"output"`
-	Force        *bool          `json:"force" yaml:"force" toml:"force"`
-	Resume       *bool          `json:"resume" yaml:"resume" toml:"resume"`
-	NoFallback   *bool          `json:"no-fallback" yaml:"no-fallback" toml:"no-fallback"`
-	Connections  *int           `json:"connections" yaml:"connections" toml:"connections"`
-	Retry        *int           `json:"retry" yaml:"retry" toml:"retry"`
-	PartSize     *string        `json:"part-size" yaml:"part-size" toml:"part-size"`
-	Timeout      configDuration `json:"timeout" yaml:"timeout" toml:"timeout"`
-	StallTimeout configDuration `json:"stall-timeout" yaml:"stall-timeout" toml:"stall-timeout"`
+	Output              *string        `json:"output" yaml:"output" toml:"output"`
+	Force               *bool          `json:"force" yaml:"force" toml:"force"`
+	Resume              *bool          `json:"resume" yaml:"resume" toml:"resume"`
+	ConcurrencyStrategy *string        `json:"concurrency-strategy" yaml:"concurrency-strategy" toml:"concurrency-strategy"`
+	Connections         *int           `json:"connections" yaml:"connections" toml:"connections"`
+	Retry               *int           `json:"retry" yaml:"retry" toml:"retry"`
+	PartSize            *string        `json:"part-size" yaml:"part-size" toml:"part-size"`
+	Timeout             configDuration `json:"timeout" yaml:"timeout" toml:"timeout"`
+	StallTimeout        configDuration `json:"stall-timeout" yaml:"stall-timeout" toml:"stall-timeout"`
 }
 
 type httpConfig struct {
@@ -68,7 +68,9 @@ func applyConfig(cmd *cobra.Command, opts *cliOptions) error {
 	applyValue(cmd, "output", &opts.output, config.Download.Output)
 	applyValue(cmd, "force", &opts.force, config.Download.Force)
 	applyValue(cmd, "resume", &opts.resume, config.Download.Resume)
-	applyValue(cmd, "no-fallback", &opts.noFallback, config.Download.NoFallback)
+	if config.Download.ConcurrencyStrategy != nil {
+		opts.concurrencyStrategy = *config.Download.ConcurrencyStrategy
+	}
 	applyValue(cmd, "connections", &opts.connections, config.Download.Connections)
 	applyValue(cmd, "retry", &opts.retries, config.Download.Retry)
 	applyValue(cmd, "part-size", &opts.partSize, config.Download.PartSize)

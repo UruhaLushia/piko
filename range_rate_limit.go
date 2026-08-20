@@ -12,7 +12,7 @@ const (
 )
 
 func (s *partScheduler) limitForRateLimit(delay time.Duration) {
-	if s.noFallback {
+	if s.strategy != ConcurrencyStrategyAdaptive {
 		return
 	}
 

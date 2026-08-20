@@ -16,24 +16,24 @@ import (
 const minBytesPerConnection = 5 * 1024 * 1024
 
 type downloader struct {
-	client       *http.Client
-	clients      []*http.Client
-	selector     *dialer.Selector
-	sourceURL    string
-	url          string
-	ua           string
-	headers      http.Header
-	retries      int
-	stallTimeout time.Duration
-	progress     func(Progress)
-	resume       bool
-	noFallback   bool
-	resumed      int64
-	total        int64
-	remoteSize   int64
-	rangeOffset  int64
-	resumeETag   string
-	resumeTime   string
+	client              *http.Client
+	clients             []*http.Client
+	selector            *dialer.Selector
+	sourceURL           string
+	url                 string
+	ua                  string
+	headers             http.Header
+	retries             int
+	stallTimeout        time.Duration
+	progress            func(Progress)
+	resume              bool
+	concurrencyStrategy ConcurrencyStrategy
+	resumed             int64
+	total               int64
+	remoteSize          int64
+	rangeOffset         int64
+	resumeETag          string
+	resumeTime          string
 
 	done atomic.Int64
 
@@ -134,19 +134,19 @@ func DownloadBytesRange(ctx context.Context, rawURL string, offset int64, length
 
 func newDownloader(rawURL string, opts Options, client *http.Client, clients []*http.Client, selector *dialer.Selector) *downloader {
 	return &downloader{
-		client:       client,
-		clients:      clients,
-		selector:     selector,
-		sourceURL:    rawURL,
-		url:          rawURL,
-		ua:           opts.UserAgent,
-		headers:      opts.Headers,
-		retries:      opts.Retries,
-		stallTimeout: opts.StallTimeout,
-		progress:     opts.Progress,
-		resume:       opts.Resume,
-		noFallback:   opts.NoFallback,
-		rangeOffset:  opts.Offset,
+		client:              client,
+		clients:             clients,
+		selector:            selector,
+		sourceURL:           rawURL,
+		url:                 rawURL,
+		ua:                  opts.UserAgent,
+		headers:             opts.Headers,
+		retries:             opts.Retries,
+		stallTimeout:        opts.StallTimeout,
+		progress:            opts.Progress,
+		resume:              opts.Resume,
+		concurrencyStrategy: opts.ConcurrencyStrategy,
+		rangeOffset:         opts.Offset,
 	}
 }
 

@@ -9,39 +9,40 @@ import (
 )
 
 type cliOptions struct {
-	config       string
-	output       string
-	connections  int
-	retries      int
-	force        bool
-	resume       bool
-	noFallback   bool
-	partSize     string
-	timeout      time.Duration
-	stallTimeout time.Duration
-	protocol     string
-	strategy     string
-	ipFamily     string
-	headers      []string
-	proxy        string
-	dns          string
-	dnsServers   []string
-	userAgent    string
+	config              string
+	output              string
+	connections         int
+	retries             int
+	force               bool
+	resume              bool
+	concurrencyStrategy string
+	partSize            string
+	timeout             time.Duration
+	stallTimeout        time.Duration
+	protocol            string
+	strategy            string
+	ipFamily            string
+	headers             []string
+	proxy               string
+	dns                 string
+	dnsServers          []string
+	userAgent           string
 }
 
 func NewRootCommand() *cobra.Command {
 	defaults := piko.DefaultOptions()
 	opts := cliOptions{
-		config:       defaultConfigDir,
-		connections:  defaults.Connections,
-		retries:      defaults.Retries,
-		partSize:     formatBytes(defaults.PartSize),
-		timeout:      defaults.Timeout,
-		stallTimeout: defaults.StallTimeout,
-		protocol:     defaults.Protocol.String(),
-		strategy:     defaults.ConnectionStrategy.String(),
-		ipFamily:     defaults.AddressFamily.String(),
-		userAgent:    defaults.UserAgent,
+		config:              defaultConfigDir,
+		connections:         defaults.Connections,
+		retries:             defaults.Retries,
+		partSize:            formatBytes(defaults.PartSize),
+		timeout:             defaults.Timeout,
+		stallTimeout:        defaults.StallTimeout,
+		protocol:            defaults.Protocol.String(),
+		concurrencyStrategy: defaults.ConcurrencyStrategy.String(),
+		strategy:            defaults.ConnectionStrategy.String(),
+		ipFamily:            defaults.AddressFamily.String(),
+		userAgent:           defaults.UserAgent,
 	}
 
 	cmd := &cobra.Command{
@@ -74,7 +75,6 @@ func NewRootCommand() *cobra.Command {
 	flags.StringVarP(&opts.output, "output", "o", "", "output file; discard with NUL on Windows or /dev/null on Unix")
 	flags.BoolVarP(&opts.force, "force", "f", false, "overwrite output")
 	flags.BoolVarP(&opts.resume, "resume", "r", false, "resume an interrupted range download")
-	flags.BoolVar(&opts.noFallback, "no-fallback", false, "always use all parallel connections")
 	flags.IntVarP(&opts.connections, "connections", "n", opts.connections, "parallel connections")
 	flags.IntVar(&opts.retries, "retry", opts.retries, "retry count")
 	flags.StringVarP(&opts.partSize, "part-size", "s", opts.partSize, "initial range part size")

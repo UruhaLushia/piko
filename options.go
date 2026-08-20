@@ -16,29 +16,29 @@ const (
 )
 
 type Options struct {
-	Output             string
-	Offset             int64
-	Length             int64
-	Connections        int
-	Retries            int
-	Force              bool
-	Resume             bool
-	NoFallback         bool
-	PartSize           int64
-	Timeout            time.Duration
-	StallTimeout       time.Duration
-	UserAgent          string
-	Headers            http.Header
-	Protocol           Protocol
-	ConnectionStrategy ConnectionStrategy
-	AddressFamily      AddressFamily
-	Proxy              string
-	ProxyFunc          func(*http.Request) (*url.URL, error)
-	Resolver           Resolver
-	HTTPClient         *http.Client
-	HTTPClients        []*http.Client
-	Started            func(Result)
-	Progress           func(Progress)
+	Output              string
+	Offset              int64
+	Length              int64
+	Connections         int
+	Retries             int
+	Force               bool
+	Resume              bool
+	ConcurrencyStrategy ConcurrencyStrategy
+	PartSize            int64
+	Timeout             time.Duration
+	StallTimeout        time.Duration
+	UserAgent           string
+	Headers             http.Header
+	Protocol            Protocol
+	ConnectionStrategy  ConnectionStrategy
+	AddressFamily       AddressFamily
+	Proxy               string
+	ProxyFunc           func(*http.Request) (*url.URL, error)
+	Resolver            Resolver
+	HTTPClient          *http.Client
+	HTTPClients         []*http.Client
+	Started             func(Result)
+	Progress            func(Progress)
 }
 
 type Progress struct {
@@ -64,15 +64,16 @@ type Result struct {
 
 func DefaultOptions() Options {
 	return Options{
-		Connections:        DefaultConnections,
-		Retries:            DefaultRetries,
-		PartSize:           DefaultPartSize,
-		Timeout:            DefaultTimeout,
-		StallTimeout:       DefaultStallTimeout,
-		UserAgent:          DefaultUserAgent,
-		Protocol:           ProtocolAuto,
-		ConnectionStrategy: ConnectionStrategyRoundRobin,
-		AddressFamily:      AddressFamilyAuto,
+		Connections:         DefaultConnections,
+		Retries:             DefaultRetries,
+		PartSize:            DefaultPartSize,
+		Timeout:             DefaultTimeout,
+		StallTimeout:        DefaultStallTimeout,
+		UserAgent:           DefaultUserAgent,
+		Protocol:            ProtocolAuto,
+		ConcurrencyStrategy: ConcurrencyStrategyFixed,
+		ConnectionStrategy:  ConnectionStrategyRoundRobin,
+		AddressFamily:       AddressFamilyAuto,
 	}
 }
 
@@ -98,6 +99,9 @@ func (o Options) normalize() Options {
 	}
 	if o.UserAgent == "" {
 		o.UserAgent = defaults.UserAgent
+	}
+	if o.ConcurrencyStrategy == ConcurrencyStrategyDefault {
+		o.ConcurrencyStrategy = defaults.ConcurrencyStrategy
 	}
 	if o.ConnectionStrategy == ConnectionStrategyDefault {
 		o.ConnectionStrategy = defaults.ConnectionStrategy

@@ -20,6 +20,10 @@ func run(ctx context.Context, rawURL string, opts cliOptions) error {
 	if err != nil {
 		return err
 	}
+	concurrencyStrategy, err := piko.ParseConcurrencyStrategy(opts.concurrencyStrategy)
+	if err != nil {
+		return err
+	}
 	strategy, err := piko.ParseConnectionStrategy(opts.strategy)
 	if err != nil {
 		return err
@@ -47,22 +51,22 @@ func run(ctx context.Context, rawURL string, opts cliOptions) error {
 	printer := newProgressPrinter(os.Stdout)
 	startedAt := time.Now()
 	result, err := piko.Download(ctx, rawURL, piko.Options{
-		Output:             opts.output,
-		Connections:        opts.connections,
-		Retries:            opts.retries,
-		Force:              opts.force,
-		Resume:             opts.resume,
-		NoFallback:         opts.noFallback,
-		PartSize:           partSize,
-		Timeout:            opts.timeout,
-		StallTimeout:       opts.stallTimeout,
-		UserAgent:          opts.userAgent,
-		Headers:            headers,
-		Protocol:           protocol,
-		ConnectionStrategy: strategy,
-		AddressFamily:      addressFamily,
-		Proxy:              opts.proxy,
-		Resolver:           resolver,
+		Output:              opts.output,
+		Connections:         opts.connections,
+		Retries:             opts.retries,
+		Force:               opts.force,
+		Resume:              opts.resume,
+		ConcurrencyStrategy: concurrencyStrategy,
+		PartSize:            partSize,
+		Timeout:             opts.timeout,
+		StallTimeout:        opts.stallTimeout,
+		UserAgent:           opts.userAgent,
+		Headers:             headers,
+		Protocol:            protocol,
+		ConnectionStrategy:  strategy,
+		AddressFamily:       addressFamily,
+		Proxy:               opts.proxy,
+		Resolver:            resolver,
 		Started: func(result piko.Result) {
 			if result.Parallel {
 				fmt.Fprintf(os.Stdout, "parallel download: %s (%s, %d connections, adaptive pieces from %s)\n", result.Output, formatBytes(result.Size), result.Connections, formatBytes(result.PartSize))
