@@ -61,6 +61,9 @@ func (d *downloader) inspectSources(ctx context.Context) (remoteInfo, error) {
 			defer wg.Done()
 			candidate, probeErr := d.probeRangeSource(inspectCtx, d.sources[i].URL, i)
 			if probeErr != nil || !candidate.hasSizedRange() || candidate.size != info.size {
+				if errors.Is(probeErr, context.DeadlineExceeded) || errors.Is(probeErr, context.Canceled) {
+					return
+				}
 				d.sourceState[i].disabled = true
 				d.sourceState[i].outcome = "rejected"
 				return
