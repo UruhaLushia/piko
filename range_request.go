@@ -61,12 +61,35 @@ func closeConn(conn net.Conn) {
 func (d *downloader) downloadRange(ctx context.Context, client *http.Client, writer io.WriterAt, active *activePart, source int, probeIdleTimeout time.Duration, probeProgress func(int64)) (int64, error) {
 	p := active.part
 	p.source = source
-	if d.hedgeEnabled && len(d.sources) > 1 {
-		if winner, ok := d.hedgeRange(ctx, client, p); ok {
-			p.source = winner
+	offset := p.start
+	if d.hedgeEnabled && !d.hedgeMismatch.Load() && len(d.sources) > 1 {
+		probePart := p
+		probePart.end = active.end.Load()
+		data, err := d.hedgeRange(ctx, client, probePart)
+		if err != nil {
+			return offset, err
+		}
+		// The scheduler may have handed the tail to another worker while the race ran.
+		count := min(int64(len(data)), max(active.end.Load()-offset+1, 0))
+		if count > 0 {
+			n, writeErr := writer.WriteAt(data[:count], offset)
+			offset += int64(n)
+			active.offset.Store(offset)
+			d.addProgress(int64(n), d.total)
+			if probeProgress != nil {
+				probeProgress(int64(n))
+			}
+			if writeErr != nil {
+				return offset, writeErr
+			}
+			if int64(n) != count {
+				return offset, io.ErrShortWrite
+			}
 		}
 	}
-	offset := p.start
+	if d.hedgeMismatch.Load() {
+		return offset, ErrSourceMismatch
+	}
 	var lastErr error
 	for attempt := 0; attempt <= d.retries; attempt++ {
 		end := active.end.Load()

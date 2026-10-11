@@ -67,15 +67,22 @@ func (d *downloader) acquireSource(ctx context.Context, bytes int64) (int, error
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
+		if d.hedgeMismatch.Load() {
+			return 0, ErrSourceMismatch
+		}
 		d.sourceMu.Lock()
 		best, score, available := -1, 0.0, false
+		totalInflight := 0
+		for i := range d.sourceState {
+			totalInflight += d.sourceState[i].inflight
+		}
 		for i := range d.sources {
 			s := &d.sourceState[i]
 			if s.disabled {
 				continue
 			}
 			available = true
-			if time.Now().Before(s.cooldown) || s.inflight >= d.sourceLimit {
+			if totalInflight >= d.sourceConcurrency || time.Now().Before(s.cooldown) || s.inflight >= d.sourceLimit {
 				continue
 			}
 			eta := s.ttfb.Seconds() + float64(max(bytes, 1))*float64(s.inflight+1)/max(s.rate, 1)

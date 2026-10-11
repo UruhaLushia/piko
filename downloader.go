@@ -33,6 +33,9 @@ type downloader struct {
 	progress            func(Progress)
 	resume              bool
 	hedgeEnabled        bool
+	hedgeMismatch       atomic.Bool
+	hedgeNoGain         atomic.Int32
+	sourceConcurrency   int
 	concurrencyStrategy ConcurrencyStrategy
 	resumed             int64
 	total               int64
@@ -156,6 +159,7 @@ func newDownloader(rawURL string, opts Options, client *http.Client, clients []*
 		progress:            opts.Progress,
 		resume:              opts.Resume,
 		hedgeEnabled:        opts.HedgeEnabled,
+		sourceConcurrency:   max(opts.Connections, 1),
 		concurrencyStrategy: opts.ConcurrencyStrategy,
 		rangeOffset:         opts.Offset,
 		sources:             sources,
