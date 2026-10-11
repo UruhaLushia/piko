@@ -41,31 +41,37 @@ func (e contentRangeError) Error() string {
 }
 
 func validateContentRange(partIndex int, value string, expectedStart int64, expectedEnd int64, expectedTotal ...int64) error {
-	if value == "" {
-		return contentRangeError{partIndex: partIndex, value: value, expected: formatByteRange(expectedStart, expectedEnd)}
+	expected := formatByteRange(expectedStart, expectedEnd)
+	total := int64(0)
+	if len(expectedTotal) > 0 {
+		total = expectedTotal[0]
 	}
-	space := strings.IndexByte(value, ' ')
-	slash := strings.IndexByte(value, '/')
-	dash := strings.IndexByte(value, '-')
-	if space < 0 || slash < 0 || dash < 0 || space >= dash || dash >= slash {
-		return contentRangeError{partIndex: partIndex, value: value, expected: formatByteRange(expectedStart, expectedEnd)}
+	if total > 0 {
+		expected = fmt.Sprintf("bytes %d-%d/%d", expectedStart, expectedEnd, total)
 	}
-	start, err := strconv.ParseInt(value[space+1:dash], 10, 64)
-	if err != nil {
-		return contentRangeError{partIndex: partIndex, value: value, expected: formatByteRange(expectedStart, expectedEnd)}
+	invalid := contentRangeError{partIndex: partIndex, value: value, expected: expected}
+	if !strings.HasPrefix(value, "bytes ") {
+		return invalid
 	}
-	end, err := strconv.ParseInt(value[dash+1:slash], 10, 64)
-	if err != nil {
-		return contentRangeError{partIndex: partIndex, value: value, expected: formatByteRange(expectedStart, expectedEnd)}
+	span, size, ok := strings.Cut(strings.TrimPrefix(value, "bytes "), "/")
+	if !ok {
+		return invalid
 	}
-	if len(expectedTotal) > 0 && expectedTotal[0] > 0 {
-		total, err := strconv.ParseInt(value[slash+1:], 10, 64)
-		if err != nil || total != expectedTotal[0] {
-			return contentRangeError{partIndex: partIndex, value: value, expected: formatByteRange(expectedStart, expectedEnd)}
-		}
+	a, b, ok := strings.Cut(span, "-")
+	if !ok {
+		return invalid
 	}
-	if start != expectedStart || end != expectedEnd {
-		return contentRangeError{partIndex: partIndex, value: value, expected: formatByteRange(expectedStart, expectedEnd)}
+	start, e1 := strconv.ParseInt(a, 10, 64)
+	end, e2 := strconv.ParseInt(b, 10, 64)
+	if e1 != nil || e2 != nil || start < 0 || end < start || start != expectedStart || end != expectedEnd {
+		return invalid
+	}
+	if size == "*" && total <= 0 {
+		return nil
+	}
+	actual, err := strconv.ParseInt(size, 10, 64)
+	if err != nil || actual <= end || (total > 0 && actual != total) {
+		return invalid
 	}
 	return nil
 }

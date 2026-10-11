@@ -58,8 +58,9 @@ func closeConn(conn net.Conn) {
 	}
 }
 
-func (d *downloader) downloadRange(ctx context.Context, client *http.Client, writer io.WriterAt, active *activePart, probeIdleTimeout time.Duration, probeProgress func(int64)) (int64, error) {
+func (d *downloader) downloadRange(ctx context.Context, client *http.Client, writer io.WriterAt, active *activePart, source int, probeIdleTimeout time.Duration, probeProgress func(int64)) (int64, error) {
 	p := active.part
+	p.source = source
 	offset := p.start
 	var lastErr error
 	for attempt := 0; attempt <= d.retries; attempt++ {
@@ -89,10 +90,7 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 			active.clearConnection()
 			attemptCancel()
 		}
-		sourceURL := d.url
-		if p.source >= 0 && p.source < len(d.sources) {
-			sourceURL = d.sources[p.source].URL
-		}
+		sourceURL := d.urlOf(source)
 		req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, sourceURL, nil)
 		if err != nil {
 			probeTimer.stop()
@@ -108,7 +106,7 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 		remoteStart := d.rangeOffset + offset
 		remoteEnd := d.rangeOffset + end
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", remoteStart, remoteEnd))
-		if validator := d.resumeValidator(); validator != "" {
+		if validator := d.resumeValidator(); validator != "" && source == d.primarySource {
 			req.Header.Set("If-Range", validator)
 		}
 		resp, err := client.Do(req)
@@ -123,7 +121,7 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 				resp.Body.Close()
 			}
 			d.recordIPAttempt(connKey, offset-attemptStart, time.Since(attemptStarted), err)
-			d.recordSourceBytes(p.source, max(offset-attemptStart, 0))
+			d.finishSource(source, offset-attemptStart, time.Since(attemptStarted), err)
 			attemptCanceled := attemptCtx.Err() != nil
 			finishAttempt()
 			if offset > active.end.Load() {
@@ -133,13 +131,15 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 			if active.connectionCloseRequested() {
 				return offset, errConcurrencyProbeClosed
 			}
-			if !isRetryableDownloadError(err) {
+			if len(d.sources) > 1 || !isRetryableDownloadError(err) {
 				return offset, err
 			}
 			if ctx.Err() == nil && attemptCanceled {
 				return offset, err
 			}
 		} else {
+			d.recordSourceHeaders(source, time.Since(attemptStarted))
+			bodyStarted := time.Now()
 			err = d.copyRange(attemptCtx, attemptCancel, writer, resp, p.index, attemptStart, end, remoteStart, remoteEnd, &offset, active, partLease(p), conn, probeIdleTimeout, probeProgress)
 			attemptCanceled := attemptCtx.Err() != nil
 			if shouldCloseRangeConnection(err, offset, end, active.end.Load()) {
@@ -147,7 +147,7 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 			}
 			resp.Body.Close()
 			d.recordIPAttempt(connKey, offset-attemptStart, time.Since(attemptStarted), err)
-			d.recordSourceBytes(p.source, max(offset-attemptStart, 0))
+			d.finishSource(source, offset-attemptStart, time.Since(bodyStarted), err)
 			finishAttempt()
 			if err == nil {
 				return offset, nil
@@ -159,7 +159,7 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 			if active.connectionCloseRequested() {
 				return offset, errConcurrencyProbeClosed
 			}
-			if !isRetryableDownloadError(err) {
+			if len(d.sources) > 1 || !isRetryableDownloadError(err) {
 				return offset, err
 			}
 			if isRateLimitedDownloadError(err) {

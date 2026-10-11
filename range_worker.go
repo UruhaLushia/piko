@@ -57,8 +57,13 @@ func (d *downloader) runPartWorker(ctx context.Context, scheduler *partScheduler
 		if ctx.Err() != nil {
 			return nil
 		}
+		source, err := d.acquireSource(ctx, partSize)
+		if err != nil {
+			return err
+		}
 		active, ok := scheduler.nextPart(workerID)
 		if !ok {
+			d.releaseSource(source)
 			if !scheduler.workerEnabled(workerID) {
 				client.CloseIdleConnections()
 			}
@@ -72,10 +77,7 @@ func (d *downloader) runPartWorker(ctx context.Context, scheduler *partScheduler
 		}
 
 		p := active.part
-		if len(d.sources) > 1 {
-			p.source = d.chooseSource()
-			active.part = p
-		}
+		p.source = source
 		started := time.Now()
 		var probeProgress func(int64)
 		if p.concurrencyProbe {
@@ -83,16 +85,13 @@ func (d *downloader) runPartWorker(ctx context.Context, scheduler *partScheduler
 				scheduler.recordConcurrencyProbe(workerID, bytes)
 			}
 		}
-		offset, err := d.downloadRange(ctx, client, writer, active, p.probeIdleTimeout(), probeProgress)
+		offset, err := d.downloadRange(ctx, client, writer, active, source, p.probeIdleTimeout(), probeProgress)
+		d.releaseSource(p.source)
 		scheduler.finish(workerID, active)
 		if err != nil {
-			d.setSourceOutcome(p.source, "failed")
 			p.end = active.end.Load()
 			if offset <= p.end {
-				if ctx.Err() == nil && isRetryableDownloadError(err) {
-					if len(d.sources) > 1 {
-						p.source = (p.source + 1) % len(d.sources)
-					}
+				if ctx.Err() == nil && (len(d.sources) > 1 || isRetryableDownloadError(err)) {
 					retry := d.planRangeRetry(scheduler, workerID, p, offset, partSize, err)
 					if isSlowConnectionError(err) {
 						p.slowRetries++

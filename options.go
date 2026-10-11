@@ -116,6 +116,7 @@ func (o Options) normalize() Options {
 	if o.UserAgent == "" {
 		o.UserAgent = defaults.UserAgent
 	}
+	o.Sources = append([]Source(nil), o.Sources...)
 	for i := range o.Sources {
 		o.Sources[i].Headers = cloneHeader(o.Sources[i].Headers)
 	}

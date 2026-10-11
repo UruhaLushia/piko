@@ -18,6 +18,9 @@ type rangeRetryPlan struct {
 
 func (d *downloader) planRangeRetry(scheduler *partScheduler, workerID int, p part, offset int64, partSize int64, err error) rangeRetryPlan {
 	plan := rangeRetryPlan{maxRequeues: max(d.retries*4, 8)}
+	if len(d.sources) > 1 {
+		return rangeRetryPlan{maxRequeues: max(1, d.retries+1) * len(d.sources)}
+	}
 	switch {
 	case isRateLimitedDownloadError(err):
 		plan.maxRequeues = max(d.retries*16, 64)

@@ -10,7 +10,7 @@ import (
 func (d *downloader) runBytes(ctx context.Context, opts Options) ([]byte, Result, error) {
 	result, err := d.plan(ctx, opts, false)
 	if err != nil {
-		return nil, Result{}, err
+		return nil, Result{SourceStats: d.sourceStats()}, err
 	}
 
 	if opts.Started != nil {
@@ -46,6 +46,17 @@ func (d *downloader) runBytesRange(ctx context.Context, opts Options) ([]byte, R
 		return nil, Result{}, fmt.Errorf("byte range overflows: offset %d length %d", opts.Offset, opts.Length)
 	}
 
+	if len(d.sources) > 1 && opts.Length > 0 {
+		info, err := d.inspectSources(ctx)
+		if err != nil {
+			return nil, Result{SourceStats: d.sourceStats()}, err
+		}
+		if !info.hasSizedRange() || opts.Offset+opts.Length > info.size {
+			return nil, Result{SourceStats: d.sourceStats()}, fmt.Errorf("range outside resource or source is not rangeable")
+		}
+		d.remoteSize = info.size
+		d.url = d.urlOf(d.primarySource)
+	}
 	connections := opts.Connections
 	if opts.Length == 0 {
 		connections = 1
@@ -55,6 +66,7 @@ func (d *downloader) runBytesRange(ctx context.Context, opts Options) ([]byte, R
 		connections = min(connections, maxUseful)
 	}
 	result := Result{
+		TotalSize:   d.remoteSize,
 		Offset:      opts.Offset,
 		Size:        opts.Length,
 		Rangeable:   true,

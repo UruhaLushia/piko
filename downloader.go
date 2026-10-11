@@ -22,12 +22,10 @@ type downloader struct {
 	sourceURL           string
 	url                 string
 	sources             []Source
-	sourceAttempts      []atomic.Int64
-	sourceBytes         []atomic.Int64
-	sourceStarted       []atomic.Int64
-	nextSource          atomic.Uint32
 	sourceMu            sync.Mutex
-	sourceOutcome       []string
+	sourceState         []sourceState
+	primarySource       int
+	sourceLimit         int
 	ua                  string
 	headers             http.Header
 	retries             int
@@ -47,29 +45,6 @@ type downloader struct {
 	speedMu      sync.Mutex
 	nextSpeedID  int64
 	activeSpeeds map[int64]float64
-}
-
-func (d *downloader) chooseSource() int {
-	if len(d.sources) < 2 {
-		return 0
-	}
-	now := time.Now().UnixNano()
-	best, bestRate := -1, float64(-1)
-	for i := range d.sources {
-		started := d.sourceStarted[i].Load()
-		bytes := d.sourceBytes[i].Load()
-		if started == 0 || bytes == 0 {
-			continue
-		}
-		rate := float64(bytes) / float64(max(now-started, int64(time.Millisecond)))
-		if rate > bestRate {
-			best, bestRate = i, rate
-		}
-	}
-	if best >= 0 {
-		return best
-	}
-	return int(d.nextSource.Add(1)-1) % len(d.sources)
 }
 
 type Client struct {
@@ -110,11 +85,6 @@ func NewClient(opts Options) (*Client, error) {
 	}
 
 	opts.Headers = cloneHeader(opts.Headers)
-	for i := range opts.Sources {
-		if opts.Sources[i].URL == "" {
-			continue
-		}
-	}
 	return &Client{opts: opts, client: client, clients: clients, selector: selector}, nil
 }
 
@@ -169,6 +139,10 @@ func DownloadBytesRange(ctx context.Context, rawURL string, offset int64, length
 
 func newDownloader(rawURL string, opts Options, client *http.Client, clients []*http.Client, selector *dialer.Selector) *downloader {
 	sources := normalizedSources(rawURL, opts.Sources)
+	sourceLimit := opts.Connections
+	if len(sources) > 1 {
+		sourceLimit = min(sourceLimit, 6)
+	}
 	return &downloader{
 		client:              client,
 		clients:             clients,
@@ -184,10 +158,8 @@ func newDownloader(rawURL string, opts Options, client *http.Client, clients []*
 		rangeOffset:         opts.Offset,
 		sources:             sources,
 		url:                 sources[0].URL,
-		sourceAttempts:      make([]atomic.Int64, len(sources)),
-		sourceBytes:         make([]atomic.Int64, len(sources)),
-		sourceStarted:       make([]atomic.Int64, len(sources)),
-		sourceOutcome:       make([]string, len(sources)),
+		sourceState:         make([]sourceState, len(sources)),
+		sourceLimit:         max(1, sourceLimit),
 	}
 }
 
@@ -236,7 +208,7 @@ func cloneHeader(header http.Header) http.Header {
 func (d *downloader) run(ctx context.Context, opts Options) (Result, error) {
 	result, err := d.plan(ctx, opts, true)
 	if err != nil {
-		return Result{}, err
+		return Result{SourceStats: d.sourceStats()}, err
 	}
 
 	if !result.Discarded {
@@ -269,7 +241,7 @@ func (d *downloader) plan(ctx context.Context, opts Options, allowDiscard bool) 
 		return Result{}, fmt.Errorf("invalid url: %q", d.url)
 	}
 
-	info, err := d.inspect(ctx)
+	info, err := d.inspectSources(ctx)
 	if err != nil {
 		return Result{}, err
 	}
@@ -282,7 +254,9 @@ func (d *downloader) plan(ctx context.Context, opts Options, allowDiscard bool) 
 			parsed = finalURL
 		}
 	}
-	d.filterSources(ctx, info.size)
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 
 	output := resolveOutputPath(opts.Output, parsed, info.suggested)
 	discard := allowDiscard && IsNullOutput(output)
@@ -304,7 +278,7 @@ func (d *downloader) plan(ctx context.Context, opts Options, allowDiscard bool) 
 		}
 	}
 	parallel := connections > 1 && info.rangeable && selectionSize > 0
-	segmented := partial || parallel || (opts.Resume && info.rangeable && selectionSize > 0)
+	segmented := partial || parallel || (len(d.sources) > 1 && info.hasSizedRange()) || (opts.Resume && info.rangeable && selectionSize > 0)
 	if !segmented {
 		connections = 1
 	}
@@ -322,68 +296,6 @@ func (d *downloader) plan(ctx context.Context, opts Options, allowDiscard bool) 
 		PartSize:    opts.PartSize,
 		Segmented:   segmented,
 	}, nil
-}
-
-func (d *downloader) filterSources(ctx context.Context, expectedSize int64) {
-	if len(d.sources) < 2 || expectedSize <= 0 {
-		return
-	}
-	valid := d.sources[:1]
-	for i := 1; i < len(d.sources); i++ {
-		info, err := d.probeRangeSource(ctx, d.sources[i].URL, i)
-		if err != nil || (info.size > 0 && info.size != expectedSize) {
-			d.setSourceOutcome(i, "rejected")
-			continue
-		}
-		valid = append(valid, d.sources[i])
-	}
-	d.sources = valid
-	d.sourceAttempts = make([]atomic.Int64, len(valid))
-	d.sourceBytes = make([]atomic.Int64, len(valid))
-	d.sourceStarted = make([]atomic.Int64, len(valid))
-	d.sourceMu.Lock()
-	d.sourceOutcome = make([]string, len(valid))
-	d.sourceMu.Unlock()
-}
-
-func (d *downloader) recordSourceAttempt(source int, bytes int64) {
-	if source < 0 || source >= len(d.sourceAttempts) {
-		return
-	}
-	d.sourceAttempts[source].Add(1)
-	d.sourceStarted[source].CompareAndSwap(0, time.Now().UnixNano())
-	if bytes > 0 {
-		d.sourceBytes[source].Add(bytes)
-	}
-	d.setSourceOutcome(source, "used")
-}
-
-func (d *downloader) recordSourceBytes(source int, bytes int64) {
-	if source >= 0 && source < len(d.sourceBytes) && bytes > 0 {
-		d.sourceBytes[source].Add(bytes)
-	}
-}
-
-func (d *downloader) setSourceOutcome(source int, outcome string) {
-	d.sourceMu.Lock()
-	defer d.sourceMu.Unlock()
-	if source >= 0 && source < len(d.sourceOutcome) {
-		d.sourceOutcome[source] = outcome
-	}
-}
-
-func (d *downloader) sourceStats() []SourceStat {
-	stats := make([]SourceStat, len(d.sources))
-	d.sourceMu.Lock()
-	defer d.sourceMu.Unlock()
-	for i, source := range d.sources {
-		outcome := d.sourceOutcome[i]
-		if outcome == "" {
-			outcome = "unused"
-		}
-		stats[i] = SourceStat{URL: source.URL, Attempts: int(d.sourceAttempts[i].Load()), Bytes: d.sourceBytes[i].Load(), Outcome: outcome}
-	}
-	return stats
 }
 
 func selectedRange(total int64, offset int64, length int64) (int64, bool, error) {

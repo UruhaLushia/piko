@@ -71,7 +71,7 @@ func (d *downloader) inspectHead(ctx context.Context) (remoteInfo, int) {
 		return info, 0
 	}
 	d.setCommonHeaders(req)
-	d.setSourceHeaders(req, 0)
+	d.setSourceHeaders(req, d.primarySource)
 	resp, err := d.client.Do(req)
 	if err != nil {
 		return info, 0
@@ -98,7 +98,7 @@ func (i remoteInfo) hasSizedRange() bool {
 }
 
 func (d *downloader) probeRange(ctx context.Context, rawURL string) (remoteInfo, error) {
-	return d.probeRangeSource(ctx, rawURL, 0)
+	return d.probeRangeSource(ctx, rawURL, d.primarySource)
 }
 
 func (d *downloader) probeRangeSource(ctx context.Context, rawURL string, source int) (remoteInfo, error) {
@@ -127,6 +127,9 @@ func (d *downloader) probeRangeSource(ctx context.Context, rawURL string, source
 		_ = resp.Body.Close()
 
 		if resp.StatusCode == http.StatusPartialContent {
+			if err := validateContentRange(0, resp.Header.Get("Content-Range"), 0, 0); err != nil {
+				return remoteInfo{}, err
+			}
 			return remoteInfo{
 				size:         parseContentRangeSize(resp.Header.Get("Content-Range")),
 				rangeable:    true,

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 )
 
 const copyBufferSize = 1024 * 1024
@@ -15,6 +16,7 @@ func (d *downloader) downloadSingle(ctx context.Context, output string, total in
 	partPath := ""
 	if !discard {
 		partPath = output + ".part"
+		defer func() { _ = os.Remove(partPath) }()
 		if err := prepareTemp(partPath); err != nil {
 			return err
 		}
@@ -76,12 +78,21 @@ func (d *downloader) downloadSingleAttempt(ctx context.Context, partPath string,
 	return err
 }
 
-func (d *downloader) downloadSingleToWriter(ctx context.Context, writer io.Writer, total int64) (int64, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.url, nil)
+func (d *downloader) downloadSingleToWriter(ctx context.Context, writer io.Writer, total int64) (copied int64, resultErr error) {
+	source, err := d.acquireSource(ctx, total)
+	if err != nil {
+		return 0, err
+	}
+	defer d.releaseSource(source)
+	d.recordSourceAttempt(source, 0)
+	started := time.Now()
+	defer func() { d.finishSource(source, copied, time.Since(started), resultErr) }()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.urlOf(source), nil)
 	if err != nil {
 		return 0, err
 	}
 	d.setCommonHeaders(req)
+	d.setSourceHeaders(req, source)
 
 	attemptCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -92,6 +103,8 @@ func (d *downloader) downloadSingleToWriter(ctx context.Context, writer io.Write
 		return 0, err
 	}
 	defer resp.Body.Close()
+	d.recordSourceHeaders(source, time.Since(started))
+	started = time.Now()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return 0, fmt.Errorf("download failed: %s", resp.Status)
 	}
@@ -99,7 +112,10 @@ func (d *downloader) downloadSingleToWriter(ctx context.Context, writer io.Write
 		total = resp.ContentLength
 	}
 
-	copied, err := d.copyToWriter(attemptCtx, cancel, writer, resp.Body, total)
+	copied, err = d.copyToWriter(attemptCtx, cancel, writer, resp.Body, total)
+	if err == nil && total > 0 && copied != total {
+		err = io.ErrUnexpectedEOF
+	}
 	return copied, err
 }
 
