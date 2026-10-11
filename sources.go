@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 )
+
+const sourceInspectBudget = 3 * time.Second
 
 type sourceState struct {
 	attempts, inflight, failures int
@@ -43,21 +46,29 @@ func (d *downloader) inspectSources(ctx context.Context) (remoteInfo, error) {
 		return remoteInfo{}, err
 	}
 	d.sourceState[d.primarySource].finalURL = info.finalURL
+	if !info.hasSizedRange() {
+		return info, nil
+	}
+	inspectCtx, cancel := context.WithTimeout(ctx, sourceInspectBudget)
+	defer cancel()
+	var wg sync.WaitGroup
 	for i := range d.sources {
 		if i == d.primarySource || d.sourceState[i].disabled {
 			continue
 		}
-		candidate, probeErr := d.probeRangeSource(ctx, d.sources[i].URL, i)
-		if ctx.Err() != nil {
-			return remoteInfo{}, ctx.Err()
-		}
-		if probeErr != nil || !info.hasSizedRange() || !candidate.hasSizedRange() || candidate.size != info.size {
-			d.sourceState[i].disabled = true
-			d.sourceState[i].outcome = "rejected"
-			continue
-		}
-		d.sourceState[i].finalURL = candidate.finalURL
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			candidate, probeErr := d.probeRangeSource(inspectCtx, d.sources[i].URL, i)
+			if probeErr != nil || !candidate.hasSizedRange() || candidate.size != info.size {
+				d.sourceState[i].disabled = true
+				d.sourceState[i].outcome = "rejected"
+				return
+			}
+			d.sourceState[i].finalURL = candidate.finalURL
+		}(i)
 	}
+	wg.Wait()
 	return info, nil
 }
 
