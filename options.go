@@ -23,6 +23,7 @@ type Options struct {
 	Retries             int
 	Force               bool
 	Resume              bool
+	HedgeEnabled        bool
 	ConcurrencyStrategy ConcurrencyStrategy
 	PartSize            int64
 	Timeout             time.Duration

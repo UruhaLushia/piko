@@ -61,6 +61,11 @@ func closeConn(conn net.Conn) {
 func (d *downloader) downloadRange(ctx context.Context, client *http.Client, writer io.WriterAt, active *activePart, source int, probeIdleTimeout time.Duration, probeProgress func(int64)) (int64, error) {
 	p := active.part
 	p.source = source
+	if d.hedgeEnabled && len(d.sources) > 1 {
+		if winner, ok := d.hedgeRange(ctx, client, p); ok {
+			p.source = winner
+		}
+	}
 	offset := p.start
 	var lastErr error
 	for attempt := 0; attempt <= d.retries; attempt++ {
