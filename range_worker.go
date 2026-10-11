@@ -2,6 +2,7 @@ package piko
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -89,6 +90,9 @@ func (d *downloader) runPartWorker(ctx context.Context, scheduler *partScheduler
 		d.releaseSource(p.source)
 		scheduler.finish(workerID, active)
 		if err != nil {
+			if errors.Is(err, ErrSourceMismatch) {
+				return err
+			}
 			p.end = active.end.Load()
 			if offset <= p.end {
 				if ctx.Err() == nil && (len(d.sources) > 1 || isRetryableDownloadError(err)) {
