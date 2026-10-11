@@ -40,14 +40,14 @@ func (e contentRangeError) Error() string {
 	return fmt.Sprintf("part %d invalid Content-Range %q, expected %s", e.partIndex, e.value, e.expected)
 }
 
-func validateContentRange(partIndex int, value string, expectedStart int64, expectedEnd int64) error {
+func validateContentRange(partIndex int, value string, expectedStart int64, expectedEnd int64, expectedTotal ...int64) error {
 	if value == "" {
 		return contentRangeError{partIndex: partIndex, value: value, expected: formatByteRange(expectedStart, expectedEnd)}
 	}
 	space := strings.IndexByte(value, ' ')
 	slash := strings.IndexByte(value, '/')
 	dash := strings.IndexByte(value, '-')
-	if space < 0 || slash < 0 || dash < 0 || !(space < dash && dash < slash) {
+	if space < 0 || slash < 0 || dash < 0 || space >= dash || dash >= slash {
 		return contentRangeError{partIndex: partIndex, value: value, expected: formatByteRange(expectedStart, expectedEnd)}
 	}
 	start, err := strconv.ParseInt(value[space+1:dash], 10, 64)
@@ -57,6 +57,12 @@ func validateContentRange(partIndex int, value string, expectedStart int64, expe
 	end, err := strconv.ParseInt(value[dash+1:slash], 10, 64)
 	if err != nil {
 		return contentRangeError{partIndex: partIndex, value: value, expected: formatByteRange(expectedStart, expectedEnd)}
+	}
+	if len(expectedTotal) > 0 && expectedTotal[0] > 0 {
+		total, err := strconv.ParseInt(value[slash+1:], 10, 64)
+		if err != nil || total != expectedTotal[0] {
+			return contentRangeError{partIndex: partIndex, value: value, expected: formatByteRange(expectedStart, expectedEnd)}
+		}
 	}
 	if start != expectedStart || end != expectedEnd {
 		return contentRangeError{partIndex: partIndex, value: value, expected: formatByteRange(expectedStart, expectedEnd)}

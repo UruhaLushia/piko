@@ -52,7 +52,7 @@ func (d *downloader) downloadSingle(ctx context.Context, output string, total in
 }
 
 func (d *downloader) downloadSingleAttempt(ctx context.Context, partPath string, total int64, discard bool) error {
-	var writer io.Writer = io.Discard
+	writer := io.Discard
 	var file *os.File
 	var err error
 	if !discard {

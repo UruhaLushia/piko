@@ -72,6 +72,10 @@ func (d *downloader) runPartWorker(ctx context.Context, scheduler *partScheduler
 		}
 
 		p := active.part
+		if len(d.sources) > 1 {
+			p.source = d.chooseSource()
+			active.part = p
+		}
 		started := time.Now()
 		var probeProgress func(int64)
 		if p.concurrencyProbe {
@@ -82,9 +86,13 @@ func (d *downloader) runPartWorker(ctx context.Context, scheduler *partScheduler
 		offset, err := d.downloadRange(ctx, client, writer, active, p.probeIdleTimeout(), probeProgress)
 		scheduler.finish(workerID, active)
 		if err != nil {
+			d.setSourceOutcome(p.source, "failed")
 			p.end = active.end.Load()
 			if offset <= p.end {
 				if ctx.Err() == nil && isRetryableDownloadError(err) {
+					if len(d.sources) > 1 {
+						p.source = (p.source + 1) % len(d.sources)
+					}
 					retry := d.planRangeRetry(scheduler, workerID, p, offset, partSize, err)
 					if isSlowConnectionError(err) {
 						p.slowRetries++

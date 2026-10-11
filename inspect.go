@@ -71,6 +71,7 @@ func (d *downloader) inspectHead(ctx context.Context) (remoteInfo, int) {
 		return info, 0
 	}
 	d.setCommonHeaders(req)
+	d.setSourceHeaders(req, 0)
 	resp, err := d.client.Do(req)
 	if err != nil {
 		return info, 0
@@ -97,6 +98,10 @@ func (i remoteInfo) hasSizedRange() bool {
 }
 
 func (d *downloader) probeRange(ctx context.Context, rawURL string) (remoteInfo, error) {
+	return d.probeRangeSource(ctx, rawURL, 0)
+}
+
+func (d *downloader) probeRangeSource(ctx context.Context, rawURL string, source int) (remoteInfo, error) {
 	var lastErr error
 	for attempt := 0; attempt <= d.retries; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
@@ -104,6 +109,7 @@ func (d *downloader) probeRange(ctx context.Context, rawURL string) (remoteInfo,
 			return remoteInfo{}, err
 		}
 		d.setCommonHeaders(req)
+		d.setSourceHeaders(req, source)
 		req.Header.Set("Range", "bytes=0-0")
 
 		resp, err := d.client.Do(req)

@@ -26,6 +26,7 @@ type part struct {
 	allowSlow        bool
 	rateProbe        bool
 	concurrencyProbe bool
+	source           int
 }
 
 func (p part) length() int64 {

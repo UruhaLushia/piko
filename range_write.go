@@ -19,7 +19,7 @@ func (d *downloader) copyRange(ctx context.Context, cancel context.CancelFunc, w
 	if resp.StatusCode != http.StatusPartialContent {
 		return httpStatusError{partIndex: partIndex, code: resp.StatusCode, status: resp.Status}
 	}
-	if err := validateContentRange(partIndex, resp.Header.Get("Content-Range"), remoteStart, remoteEnd); err != nil {
+	if err := validateContentRange(partIndex, resp.Header.Get("Content-Range"), remoteStart, remoteEnd, d.remoteSize); err != nil {
 		return err
 	}
 

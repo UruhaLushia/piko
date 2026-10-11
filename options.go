@@ -29,6 +29,7 @@ type Options struct {
 	StallTimeout        time.Duration
 	UserAgent           string
 	Headers             http.Header
+	Sources             []Source
 	Protocol            Protocol
 	ConnectionStrategy  ConnectionStrategy
 	AddressFamily       AddressFamily
@@ -39,6 +40,13 @@ type Options struct {
 	HTTPClients         []*http.Client
 	Started             func(Result)
 	Progress            func(Progress)
+}
+
+// Source is an alternate URL and its request headers for a download.
+// An empty Sources list keeps the original single-URL behavior.
+type Source struct {
+	URL     string
+	Headers http.Header
 }
 
 type Progress struct {
@@ -60,6 +68,14 @@ type Result struct {
 	Parallel    bool
 	Segmented   bool
 	PartSize    int64
+	SourceStats []SourceStat
+}
+
+type SourceStat struct {
+	URL      string
+	Bytes    int64
+	Attempts int
+	Outcome  string
 }
 
 func DefaultOptions() Options {
@@ -99,6 +115,9 @@ func (o Options) normalize() Options {
 	}
 	if o.UserAgent == "" {
 		o.UserAgent = defaults.UserAgent
+	}
+	for i := range o.Sources {
+		o.Sources[i].Headers = cloneHeader(o.Sources[i].Headers)
 	}
 	if o.ConcurrencyStrategy == ConcurrencyStrategyDefault {
 		o.ConcurrencyStrategy = defaults.ConcurrencyStrategy

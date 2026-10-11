@@ -25,11 +25,13 @@ func (d *downloader) runBytes(ctx context.Context, opts Options) ([]byte, Result
 		data, err = d.downloadSingleToBytes(ctx, result.Size)
 	}
 	if err != nil {
+		result.SourceStats = d.sourceStats()
 		return nil, result, err
 	}
 	if result.Size <= 0 {
 		result.Size = int64(len(data))
 	}
+	result.SourceStats = d.sourceStats()
 	return data, result, nil
 }
 
@@ -72,8 +74,10 @@ func (d *downloader) runBytesRange(ctx context.Context, opts Options) ([]byte, R
 	d.total = opts.Length
 	data, err := d.downloadPartsToBytes(ctx, opts.Length, opts.PartSize, connections)
 	if err != nil {
+		result.SourceStats = d.sourceStats()
 		return nil, result, err
 	}
+	result.SourceStats = d.sourceStats()
 	return data, result, nil
 }
 

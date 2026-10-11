@@ -89,16 +89,22 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 			active.clearConnection()
 			attemptCancel()
 		}
-		req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, d.url, nil)
+		sourceURL := d.url
+		if p.source >= 0 && p.source < len(d.sources) {
+			sourceURL = d.sources[p.source].URL
+		}
+		req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, sourceURL, nil)
 		if err != nil {
 			probeTimer.stop()
 			finishAttempt()
 			return offset, err
 		}
 		d.setCommonHeaders(req)
+		d.setSourceHeaders(req, p.source)
 
 		attemptStart := offset
 		attemptStarted := time.Now()
+		d.recordSourceAttempt(p.source, 0)
 		remoteStart := d.rangeOffset + offset
 		remoteEnd := d.rangeOffset + end
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", remoteStart, remoteEnd))
@@ -117,6 +123,7 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 				resp.Body.Close()
 			}
 			d.recordIPAttempt(connKey, offset-attemptStart, time.Since(attemptStarted), err)
+			d.recordSourceBytes(p.source, max(offset-attemptStart, 0))
 			attemptCanceled := attemptCtx.Err() != nil
 			finishAttempt()
 			if offset > active.end.Load() {
@@ -140,6 +147,7 @@ func (d *downloader) downloadRange(ctx context.Context, client *http.Client, wri
 			}
 			resp.Body.Close()
 			d.recordIPAttempt(connKey, offset-attemptStart, time.Since(attemptStarted), err)
+			d.recordSourceBytes(p.source, max(offset-attemptStart, 0))
 			finishAttempt()
 			if err == nil {
 				return offset, nil
