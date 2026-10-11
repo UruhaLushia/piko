@@ -89,7 +89,9 @@ func (d *downloader) hedgeRange(ctx context.Context, client *http.Client, p part
 		case secondResult = <-results:
 		case <-time.After(25 * time.Millisecond):
 			cancel()
-			secondResult = <-results
+			// The first successful response is already usable. Do not wait for
+			// a stalled loser; a fast loser is still checked for byte mismatch.
+			return firstResult.data, nil
 		}
 	} else {
 		secondResult = <-results
