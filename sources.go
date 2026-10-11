@@ -165,6 +165,13 @@ func (d *downloader) finishSource(source int, bytes int64, elapsed time.Duration
 	s.failures++
 	s.outcome = "failed"
 	s.cooldown = time.Now().Add(time.Second << min(s.failures-1, 5))
+	// A multi-source download must stop spending retries on a mirror that has
+	// already demonstrated a slow or broken range. Keep transient HTTP errors
+	// retryable, but remove the bad source from subsequent range scheduling.
+	if len(d.sources) > 1 && (isSlowConnectionError(err) || s.failures >= 2) {
+		s.disabled = true
+		s.outcome = "rejected"
+	}
 	var status httpStatusError
 	var invalid contentRangeError
 	if errors.As(err, &invalid) || (errors.As(err, &status) && status.code >= 400 && status.code < 500 && status.code != http.StatusTooManyRequests) {
