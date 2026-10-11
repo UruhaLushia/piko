@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const sourceInspectBudget = 3 * time.Second
+const sourceInspectBudget = 1 * time.Second
 
 type sourceState struct {
 	attempts, inflight, failures int
