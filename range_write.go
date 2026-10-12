@@ -66,7 +66,7 @@ func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFun
 	var tailTimer *idleTimer
 	defer func() { tailTimer.stop() }()
 
-	speedID := d.registerRangeSpeed()
+	speedID := d.registerRangeSpeed(active.part.source)
 	defer d.unregisterRangeSpeed(speedID)
 	started := time.Now()
 	lastCheck := started
@@ -119,8 +119,8 @@ func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFun
 					active.recentRate = speed
 					active.recentRateAt = now
 					active.mu.Unlock()
-					avg, peers := d.updateRangeSpeed(speedID, speed)
-					slow := !active.part.allowSlow && shouldCloseSlowConnection(speed, avg, peers, now.Sub(started), *offset-requestStart, remaining)
+					avg, peers, otherAvg := d.updateRangeSpeed(speedID, speed)
+					slow := !active.part.allowSlow && shouldCloseSlowConnection(speed, avg, otherAvg, peers, now.Sub(started), *offset-requestStart, remaining)
 					if slow && remaining <= slowTailWindow {
 						abort()
 						return state.finish(dialer.ErrSlowConnection)
@@ -229,7 +229,13 @@ func (s *rangeWriteState) flush() error {
 	return nil
 }
 
-func shouldCloseSlowConnection(speed float64, avg float64, peers int, age time.Duration, bytes int64, remaining int64) bool {
+func shouldCloseSlowConnection(speed float64, avg float64, otherAvg float64, peers int, age time.Duration, bytes int64, remaining int64) bool {
+	if otherAvg > 0 &&
+		age >= slowConnectionMinAge &&
+		bytes >= slowConnectionMinBytes &&
+		speed < otherAvg*slowConnectionSourceRatio {
+		return true
+	}
 	if peers >= slowConnectionMinPeers &&
 		age >= slowConnectionMinAge &&
 		bytes >= slowConnectionMinBytes &&

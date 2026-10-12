@@ -48,7 +48,12 @@ type downloader struct {
 
 	speedMu      sync.Mutex
 	nextSpeedID  int64
-	activeSpeeds map[int64]float64
+	activeSpeeds map[int64]rangeSpeed
+}
+
+type rangeSpeed struct {
+	source int
+	rate   float64
 }
 
 type Client struct {
