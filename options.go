@@ -77,6 +77,8 @@ type SourceStat struct {
 	Bytes    int64
 	Attempts int
 	Outcome  string
+	// Rate is the measured throughput in bytes per second per request.
+	Rate float64
 }
 
 func DefaultOptions() Options {

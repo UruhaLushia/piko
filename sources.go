@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
 )
 
@@ -24,54 +23,86 @@ type sourceState struct {
 
 // Keep indexes stable, including rejected sources, so diagnostics retain every URL.
 func (d *downloader) inspectSources(ctx context.Context) (remoteInfo, error) {
-	var info remoteInfo
-	var err error
-	for i := range d.sources {
-		d.primarySource = i
-		d.url = d.sources[i].URL
-		info, err = d.inspect(ctx)
-		if ctx.Err() != nil {
-			return remoteInfo{}, ctx.Err()
-		}
-		if err == nil && info.downloadable() {
-			break
-		}
-		d.sourceState[i].disabled = true
-		d.sourceState[i].outcome = "rejected"
-		if err == nil {
-			err = fmt.Errorf("source %d has no downloadable resource", i)
-		}
+	if len(d.sources) == 1 {
+		info, err := d.inspect(ctx)
+		d.sourceState[0].finalURL = info.finalURL
+		return info, err
 	}
-	if err != nil {
-		return remoteInfo{}, err
-	}
-	d.sourceState[d.primarySource].finalURL = info.finalURL
-	if !info.hasSizedRange() {
-		return info, nil
+
+	// Race metadata requests too: the first URL may be unreachable on a
+	// different network. Wait for the short probe window and choose the
+	// resource signature returned by the largest group of candidates.
+	type inspection struct {
+		source  int
+		info    remoteInfo
+		elapsed time.Duration
+		err     error
 	}
 	inspectCtx, cancel := context.WithTimeout(ctx, sourceInspectBudget)
 	defer cancel()
-	var wg sync.WaitGroup
+	results := make(chan inspection, len(d.sources))
 	for i := range d.sources {
-		if i == d.primarySource || d.sourceState[i].disabled {
-			continue
-		}
-		wg.Add(1)
 		go func(i int) {
-			defer wg.Done()
-			candidate, probeErr := d.probeRangeSource(inspectCtx, d.sources[i].URL, i)
-			if probeErr != nil || !candidate.hasSizedRange() || candidate.size != info.size {
-				if errors.Is(probeErr, context.DeadlineExceeded) || errors.Is(probeErr, context.Canceled) {
-					return
-				}
-				d.sourceState[i].disabled = true
-				d.sourceState[i].outcome = "rejected"
-				return
-			}
-			d.sourceState[i].finalURL = candidate.finalURL
+			started := time.Now()
+			info, err := d.probeRangeSource(inspectCtx, d.sources[i].URL, i)
+			results <- inspection{source: i, info: info, elapsed: time.Since(started), err: err}
 		}(i)
 	}
-	wg.Wait()
+	var lastErr error
+	valid := make([]inspection, 0, len(d.sources))
+	for range d.sources {
+		result := <-results
+		s := &d.sourceState[result.source]
+		if result.err != nil || !result.info.downloadable() {
+			lastErr = result.err
+			if errors.Is(result.err, context.DeadlineExceeded) || errors.Is(result.err, context.Canceled) {
+				continue
+			}
+			s.disabled = true
+			s.outcome = "rejected"
+			continue
+		}
+		valid = append(valid, result)
+	}
+	cancel()
+	if ctx.Err() != nil {
+		return remoteInfo{}, ctx.Err()
+	}
+	if len(valid) == 0 {
+		if lastErr == nil {
+			lastErr = fmt.Errorf("all download sources rejected")
+		}
+		return remoteInfo{}, lastErr
+	}
+	type signature struct {
+		size      int64
+		rangeable bool
+	}
+	groups := make(map[signature][]inspection)
+	for _, result := range valid {
+		key := signature{size: result.info.size, rangeable: result.info.rangeable}
+		groups[key] = append(groups[key], result)
+	}
+	var winners []inspection
+	for _, group := range groups {
+		if len(group) > len(winners) || (len(group) == len(winners) && len(group) > 0 && group[0].elapsed < winners[0].elapsed) {
+			winners = group
+		}
+	}
+	info := winners[0].info
+	winner := winners[0].source
+	for _, result := range valid {
+		s := &d.sourceState[result.source]
+		if result.info.size != info.size || result.info.rangeable != info.rangeable {
+			s.disabled = true
+			s.outcome = "rejected"
+			continue
+		}
+		s.finalURL = result.info.finalURL
+		s.ttfb = result.elapsed
+	}
+	d.primarySource = winner
+	d.url = d.urlOf(winner)
 	return info, nil
 }
 
@@ -102,7 +133,10 @@ func (d *downloader) acquireSource(ctx context.Context, bytes int64) (int, error
 			eta := s.ttfb.Seconds() + float64(max(bytes, 1))*float64(s.inflight+1)/max(s.rate, 1)
 			// Explore unused mirrors before concentrating on measured throughput.
 			if s.attempts == 0 {
-				eta = float64(s.inflight)
+				eta = float64(s.inflight) + s.ttfb.Seconds()
+				if s.finalURL == "" {
+					eta += sourceInspectBudget.Seconds()
+				}
 			}
 			if best < 0 || eta < score {
 				best, score = i, eta
@@ -200,7 +234,7 @@ func (d *downloader) sourceStats() []SourceStat {
 		if outcome == "" {
 			outcome = "unused"
 		}
-		stats[i] = SourceStat{URL: source.URL, Bytes: s.bytes, Attempts: s.attempts, Outcome: outcome}
+		stats[i] = SourceStat{URL: source.URL, Bytes: s.bytes, Attempts: s.attempts, Outcome: outcome, Rate: s.rate}
 	}
 	return stats
 }
