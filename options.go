@@ -79,6 +79,7 @@ type SourceStat struct {
 	Outcome  string
 	// Rate is the measured throughput in bytes per second per request.
 	Rate float64
+	TTFB time.Duration
 }
 
 func DefaultOptions() Options {

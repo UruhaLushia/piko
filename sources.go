@@ -10,6 +10,8 @@ import (
 
 const sourceInspectBudget = 1 * time.Second
 
+const sourceMinDeliveredBytes = 8 << 20
+
 type sourceState struct {
 	attempts, inflight, failures int
 	bytes                        int64
@@ -202,10 +204,7 @@ func (d *downloader) finishSource(source int, bytes int64, elapsed time.Duration
 	s.failures++
 	s.outcome = "failed"
 	s.cooldown = time.Now().Add(time.Second << min(s.failures-1, 5))
-	// A multi-source download must stop spending retries on a mirror that has
-	// already demonstrated a slow or broken range. Keep transient HTTP errors
-	// retryable, but remove the bad source from subsequent range scheduling.
-	if len(d.sources) > 1 && (isSlowConnectionError(err) || s.failures >= 2) {
+	if len(d.sources) > 1 && (isSlowConnectionError(err) || (s.failures >= 2 && s.bytes < sourceMinDeliveredBytes)) {
 		s.disabled = true
 		s.outcome = "rejected"
 	}
@@ -234,7 +233,7 @@ func (d *downloader) sourceStats() []SourceStat {
 		if outcome == "" {
 			outcome = "unused"
 		}
-		stats[i] = SourceStat{URL: source.URL, Bytes: s.bytes, Attempts: s.attempts, Outcome: outcome, Rate: s.rate}
+		stats[i] = SourceStat{URL: source.URL, Bytes: s.bytes, Attempts: s.attempts, Outcome: outcome, Rate: s.rate, TTFB: s.ttfb}
 	}
 	return stats
 }
