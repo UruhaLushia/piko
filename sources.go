@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -204,7 +205,8 @@ func (d *downloader) finishSource(source int, bytes int64, elapsed time.Duration
 	s.failures++
 	s.outcome = "failed"
 	s.cooldown = time.Now().Add(time.Second << min(s.failures-1, 5))
-	if len(d.sources) > 1 && (isSlowConnectionError(err) || (s.failures >= 2 && s.bytes < sourceMinDeliveredBytes)) {
+	truncated := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+	if isSlowConnectionError(err) || (s.failures >= 2 && (truncated || s.bytes < sourceMinDeliveredBytes)) {
 		s.disabled = true
 		s.outcome = "rejected"
 	}
