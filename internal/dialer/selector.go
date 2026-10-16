@@ -51,8 +51,6 @@ func (s *Selector) order(ips []net.IPAddr) []net.IPAddr {
 	switch s.strategy {
 	case StrategyRoundRobin:
 		return s.roundRobinOrder(ips)
-	case StrategySequential:
-		return s.sequentialOrder(ips)
 	default:
 		return s.sequentialOrder(ips)
 	}
@@ -188,7 +186,7 @@ func (s *Selector) ipCandidates(ips []net.IPAddr) ([]ipCandidate, bool) {
 		key := ipAddrKey(ip)
 		stat := s.stats[key]
 		score := avg
-		if stat != nil && stat.samples > 0 && stat.emaBps > 0 {
+		if stat != nil && stat.samples > 0 && stat.emaBps > 0 && time.Since(stat.updatedAt) <= ipQualityLifetime {
 			known = true
 			score = stat.emaBps
 			if stat.slowStreak > 0 {

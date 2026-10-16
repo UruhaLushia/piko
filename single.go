@@ -22,35 +22,33 @@ func (d *downloader) downloadSingle(ctx context.Context, output string, total in
 		}
 	}
 
-	var lastErr error
-	for attempt := 0; attempt <= d.retries; attempt++ {
-		d.done.Store(0)
-		if attempt > 0 && !discard {
-			if err := prepareTemp(partPath); err != nil {
-				return err
-			}
-		}
+	err := d.retrySingle(ctx, total, func() error {
+		return d.downloadSingleAttempt(ctx, partPath, total, discard)
+	})
+	if err != nil || discard {
+		return err
+	}
+	return finishOutput(partPath, output, force)
+}
 
-		err := d.downloadSingleAttempt(ctx, partPath, total, discard)
+func (d *downloader) retrySingle(ctx context.Context, total int64, download func() error) error {
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		d.done.Store(0)
+		err := download()
 		if err == nil {
 			d.emitProgress(total, true)
-			if discard {
-				return nil
-			}
-			return finishOutput(partPath, output, force)
+			return nil
 		}
-		lastErr = err
-		if !isRetryableDownloadError(err) || attempt == d.retries {
-			break
+		if !isRetryableDownloadError(err) || attempt >= d.retries {
+			return err
 		}
 		if err := sleepWithContext(ctx, retryDelay(attempt)); err != nil {
 			return err
 		}
 	}
-	if !discard {
-		_ = os.Remove(partPath)
-	}
-	return lastErr
 }
 
 func (d *downloader) downloadSingleAttempt(ctx context.Context, partPath string, total int64, discard bool) error {
@@ -65,12 +63,9 @@ func (d *downloader) downloadSingleAttempt(ctx context.Context, partPath string,
 		writer = file
 	}
 
-	copied, err := d.downloadSingleToWriter(ctx, writer, total)
+	_, err = d.downloadSingleToWriter(ctx, writer, total)
 	if closeErr := closeFile(file); err == nil {
 		err = closeErr
-	}
-	if err == nil && total > 0 && copied != total {
-		err = io.ErrUnexpectedEOF
 	}
 	if err != nil && !discard {
 		_ = os.Remove(partPath)
@@ -84,7 +79,7 @@ func (d *downloader) downloadSingleToWriter(ctx context.Context, writer io.Write
 		return 0, err
 	}
 	defer d.releaseSource(source)
-	d.recordSourceAttempt(source, 0)
+	d.recordSourceAttempt(source)
 	started := time.Now()
 	defer func() { d.finishSource(source, copied, time.Since(started), resultErr) }()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.urlOf(source), nil)
@@ -103,8 +98,6 @@ func (d *downloader) downloadSingleToWriter(ctx context.Context, writer io.Write
 		return 0, err
 	}
 	defer resp.Body.Close()
-	d.recordSourceHeaders(source, time.Since(started))
-	started = time.Now()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return 0, fmt.Errorf("download failed: %s", resp.Status)
 	}
@@ -112,7 +105,11 @@ func (d *downloader) downloadSingleToWriter(ctx context.Context, writer io.Write
 		total = resp.ContentLength
 	}
 
-	copied, err = d.copyToWriter(attemptCtx, cancel, writer, resp.Body, total)
+	reader := &firstByteReader{Reader: resp.Body, first: func() {
+		d.recordSourceTTFB(source, time.Since(started))
+		started = time.Now()
+	}}
+	copied, err = d.copyToWriter(attemptCtx, cancel, writer, reader, total)
 	if err == nil && total > 0 && copied != total {
 		err = io.ErrUnexpectedEOF
 	}

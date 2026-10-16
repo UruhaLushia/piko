@@ -45,6 +45,7 @@ type partScheduler struct {
 	workerDone     []int
 	workerSize     []int64
 	workerRate     []float64
+	workerLatency  []time.Duration
 	partSizeHint   int64
 	activeCount    int
 	maxActive      int
@@ -69,6 +70,13 @@ type activePart struct {
 	mu             sync.Mutex
 	part           part
 	started        time.Time
+	bodyStarted    time.Time
+	bodyOffset     int64
+	bodyWriteNanos int64
+	writeNanos     atomic.Int64
+	writing        atomic.Bool
+	startup        time.Duration
+	ready          bool
 	recentRate     float64
 	recentRateAt   time.Time
 	offset         atomic.Int64
@@ -76,6 +84,7 @@ type activePart struct {
 	connMu         sync.Mutex
 	conn           net.Conn
 	closeRequested bool
+	retire         func(net.Conn)
 }
 
 func newPartScheduler(size int64, initialPartSize int64, concurrency int, pending []downloadSpan, strategy ConcurrencyStrategy) *partScheduler {
@@ -112,6 +121,7 @@ func newPartScheduler(size int64, initialPartSize int64, concurrency int, pendin
 		workerDone:      make([]int, concurrency),
 		workerSize:      workerSize,
 		workerRate:      make([]float64, concurrency),
+		workerLatency:   make([]time.Duration, concurrency),
 		partSizeHint:    initialPartSize,
 		maxActive:       maxActive,
 		active:          make([]*activePart, concurrency),
@@ -123,8 +133,13 @@ func newPartScheduler(size int64, initialPartSize int64, concurrency int, pendin
 func (p *activePart) setConnection(conn net.Conn) {
 	p.connMu.Lock()
 	if p.closeRequested {
+		retire := p.retire
 		p.connMu.Unlock()
-		closeConn(conn)
+		if retire != nil {
+			retire(conn)
+		} else {
+			closeConn(conn)
+		}
 		return
 	}
 	p.conn = conn
@@ -141,9 +156,14 @@ func (p *activePart) closeConnection() {
 	p.connMu.Lock()
 	p.closeRequested = true
 	conn := p.conn
+	retire := p.retire
 	p.conn = nil
 	p.connMu.Unlock()
-	closeConn(conn)
+	if retire != nil {
+		retire(conn)
+	} else {
+		closeConn(conn)
+	}
 }
 
 func (p *activePart) connectionCloseRequested() bool {
@@ -157,7 +177,7 @@ func (s *partScheduler) nextPart(workerID int) (*activePart, bool) {
 	defer s.mu.Unlock()
 
 	s.recoverRateLimitLocked(time.Now())
-	if s.activeCount >= s.maxActive || !s.probeAllowsWorkerLocked(workerID) {
+	if s.activeCount >= s.maxActive || !s.probe.workerEnabled(workerID) {
 		return nil, false
 	}
 
@@ -273,15 +293,24 @@ func (s *partScheduler) stealPartLocked(workerID int) (part, bool) {
 
 	now := time.Now()
 	for id, active := range s.active {
-		if id == workerID || active == nil || now.Sub(active.started) < minStealAge {
+		if id == workerID || active == nil {
 			continue
 		}
 
 		active.mu.Lock()
+		age := now.Sub(active.started)
+		if !active.ready || active.writing.Load() || age < minStealAge || (active.bodyStarted.IsZero() && age < active.startup+minStealAge) {
+			active.mu.Unlock()
+			continue
+		}
 		remaining := active.end.Load() - active.offset.Load() + 1
 		speed := activePartRate(active, id, s.workerRate, now)
+		if !s.stealWorthwhileLocked(workerID, remaining, speed) {
+			active.mu.Unlock()
+			continue
+		}
 		active.mu.Unlock()
-		if remaining < minStealPartSize*2 && !s.canHandoffTailLocked(active, id, workerID, remaining, speed, now) {
+		if remaining < minStealPartSize*2 && !s.canHandoffTailLocked(active, workerID, remaining, speed, now) {
 			continue
 		}
 		eta := float64(remaining) / max(speed, 1)
@@ -303,9 +332,15 @@ func (s *partScheduler) stealPartLocked(workerID int) (part, bool) {
 	oldEnd := chosen.end.Load()
 	start := chosen.offset.Load()
 	remaining := oldEnd - start + 1
+	if chosen.writing.Load() {
+		return part{}, false
+	}
 	victimRate := activePartRate(chosen, chosenID, s.workerRate, time.Now())
+	if !s.stealWorthwhileLocked(workerID, remaining, victimRate) {
+		return part{}, false
+	}
 	if remaining < minStealPartSize*2 {
-		if !s.canHandoffTailLocked(chosen, chosenID, workerID, remaining, victimRate, time.Now()) {
+		if !s.canHandoffTailLocked(chosen, workerID, remaining, victimRate, time.Now()) {
 			return part{}, false
 		}
 		chosen.end.Store(start - 1)
@@ -313,7 +348,7 @@ func (s *partScheduler) stealPartLocked(workerID int) (part, bool) {
 		return part{
 			start:       start,
 			end:         oldEnd,
-			requeues:    chosen.part.requeues + 1,
+			requeues:    chosen.part.requeues,
 			slowRetries: chosen.part.slowRetries,
 			allowSlow:   chosen.part.allowSlow,
 		}, true
@@ -325,14 +360,14 @@ func (s *partScheduler) stealPartLocked(workerID int) (part, bool) {
 		end:         oldEnd,
 	}
 	helperRate := s.workerRateForLocked(workerID)
-	stolenSize := splitPartSize(remaining, victimRate, helperRate)
+	stolenSize := splitPartSize(remaining, victimRate, helperRate, s.workerLatency[workerID])
 	stolen.start = oldEnd - stolenSize + 1
 	chosen.end.Store(stolen.start - 1)
 	return stolen, true
 }
 
-func (s *partScheduler) canHandoffTailLocked(active *activePart, victimID int, helperID int, remaining int64, victimRate float64, now time.Time) bool {
-	if remaining <= 0 || remaining >= minStealPartSize*2 || active.part.requeues > 0 ||
+func (s *partScheduler) canHandoffTailLocked(active *activePart, helperID int, remaining int64, victimRate float64, now time.Time) bool {
+	if remaining <= 0 || remaining >= minStealPartSize*2 ||
 		now.Sub(active.started) < tailHandoffAge {
 		return false
 	}
@@ -340,20 +375,40 @@ func (s *partScheduler) canHandoffTailLocked(active *activePart, victimID int, h
 	if helperRate <= 0 {
 		return false
 	}
-	if victimRate <= 0 && victimID >= 0 && victimID < len(s.workerRate) {
-		victimRate = s.workerRate[victimID]
-	}
 	return victimRate <= 0 || victimRate < helperRate*tailHandoffRatio
 }
 
+func (s *partScheduler) stealWorthwhileLocked(workerID int, remaining int64, victimRate float64) bool {
+	if remaining <= 0 {
+		return false
+	}
+	helperRate := s.workerRateForLocked(workerID)
+	if helperRate <= 0 {
+		return false
+	}
+	if victimRate <= 0 {
+		return true
+	}
+	startup := s.workerLatency[workerID]
+	stolen := remaining
+	if remaining >= minStealPartSize*2 {
+		stolen = splitPartSize(remaining, victimRate, helperRate, startup)
+	}
+	finish := max(float64(remaining-stolen)/victimRate, startup.Seconds()+float64(stolen)/helperRate)
+	return float64(remaining)/victimRate-finish >= minStealAge.Seconds()
+}
+
 func activePartRate(active *activePart, workerID int, workerRate []float64, now time.Time) float64 {
-	if active.recentRateAt.After(active.started) && now.Sub(active.recentRateAt) <= slowConnectionCheckInterval {
+	if !active.bodyStarted.IsZero() && now.Sub(active.bodyStarted) >= minStealAge &&
+		active.recentRateAt.After(active.bodyStarted) && now.Sub(active.recentRateAt) <= slowConnectionCheckInterval {
 		return active.recentRate
 	}
-	elapsed := now.Sub(active.started).Seconds()
-	progress := active.offset.Load() - active.part.start
-	if progress > 0 && elapsed > 0 {
-		return float64(progress) / elapsed
+	if !active.bodyStarted.IsZero() && now.Sub(active.bodyStarted) >= minStealAge {
+		elapsed := max(now.Sub(active.bodyStarted)-time.Duration(active.writeNanos.Load()-active.bodyWriteNanos), time.Nanosecond).Seconds()
+		progress := active.offset.Load() - active.bodyOffset
+		if progress > 0 {
+			return float64(progress) / elapsed
+		}
 	}
 	if workerID >= 0 && workerID < len(workerRate) {
 		return workerRate[workerID]
@@ -379,10 +434,12 @@ func (s *partScheduler) workerRateForLocked(workerID int) float64 {
 	return 0
 }
 
-func splitPartSize(remaining int64, victimRate float64, helperRate float64) int64 {
+func splitPartSize(remaining int64, victimRate float64, helperRate float64, startup time.Duration) int64 {
 	stolen := remaining / 2
-	if victimRate > 0 && helperRate > 0 {
-		stolen = int64(float64(remaining) * helperRate / (victimRate + helperRate))
+	if victimRate <= 0 && helperRate > 0 {
+		stolen = remaining - minStealPartSize
+	} else if victimRate > 0 && helperRate > 0 {
+		stolen = int64((float64(remaining) - victimRate*startup.Seconds()) * helperRate / (victimRate + helperRate))
 	}
 	return min(max(stolen, int64(minStealPartSize)), remaining-minStealPartSize)
 }

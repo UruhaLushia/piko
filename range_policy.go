@@ -16,7 +16,7 @@ type rangeRetryPlan struct {
 	delay       time.Duration
 }
 
-func (d *downloader) planRangeRetry(scheduler *partScheduler, workerID int, p part, offset int64, partSize int64, err error) rangeRetryPlan {
+func (d *downloader) planRangeRetry(scheduler *partScheduler, workerID int, p part, err error) rangeRetryPlan {
 	plan := rangeRetryPlan{maxRequeues: max(d.retries*4, 8)}
 	if len(d.sources) > 1 {
 		return rangeRetryPlan{maxRequeues: max(1, d.retries+1) * len(d.sources)}
@@ -26,9 +26,6 @@ func (d *downloader) planRangeRetry(scheduler *partScheduler, workerID int, p pa
 		plan.maxRequeues = max(d.retries*16, 64)
 		plan.delay = rateLimitDelay(p.requeues)
 		scheduler.limitForRateLimit(plan.delay)
-		if p.end-offset+1 <= max(partSize, int64(minDynamicPartSize*2)) {
-			plan.delay = 0
-		}
 	case isRateProbeTimeout(err):
 		plan.maxRequeues = max(d.retries*16, 64)
 		scheduler.rejectRateProbe(rateLimitRecover)
@@ -88,27 +85,10 @@ func (p *idleTimer) expired() bool {
 }
 
 func partLease(p part) time.Duration {
-	if p.allowSlow || p.requeues > 0 {
+	if p.allowSlow || p.requeues > 0 || p.length() > slowTailWindow {
 		return 0
 	}
-	if p.requeues == 0 && p.length() > slowTailWindow {
-		return 0
-	}
-	if p.length() > DefaultPartSize*4 {
-		return 0
-	}
-
-	lease := rangeLease
-	if p.length() <= slowTailWindow {
-		lease = time.Duration(p.length()*int64(time.Second)) / minLeasedPartSpeed
-	}
-	if p.length() <= minDynamicPartSize && lease < rangeLease/2 {
-		lease = rangeLease / 2
-	}
-	if lease < 4*time.Second {
-		return 4 * time.Second
-	}
-	return lease
+	return max(time.Duration(p.length()*int64(time.Second))/minLeasedPartSpeed, rangeLease/2)
 }
 
 func startLeaseMonitor(cancel func(), lease time.Duration) func() {

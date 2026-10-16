@@ -29,7 +29,7 @@ func (d *downloader) downloadPartsToWriterSpans(ctx context.Context, writer io.W
 	for workerID := range concurrency {
 		client := d.clients[workerID%len(d.clients)]
 		wg.Go(func() {
-			if err := d.runPartWorker(ctx, scheduler, workerID, client, writer, partSize); err != nil {
+			if err := d.runPartWorker(ctx, scheduler, workerID, client, writer); err != nil {
 				select {
 				case errCh <- err:
 					cancel()
@@ -53,18 +53,14 @@ func (d *downloader) downloadPartsToWriterSpans(ctx context.Context, writer io.W
 	return nil
 }
 
-func (d *downloader) runPartWorker(ctx context.Context, scheduler *partScheduler, workerID int, client *http.Client, writer io.WriterAt, partSize int64) error {
+func (d *downloader) runPartWorker(ctx context.Context, scheduler *partScheduler, workerID int, client *http.Client, writer io.WriterAt) error {
+	var buffers rangeBuffers
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
-		source, err := d.acquireSource(ctx, partSize)
-		if err != nil {
-			return err
-		}
 		active, ok := scheduler.nextPart(workerID)
 		if !ok {
-			d.releaseSource(source)
 			if !scheduler.workerEnabled(workerID) {
 				client.CloseIdleConnections()
 			}
@@ -76,28 +72,57 @@ func (d *downloader) runPartWorker(ctx context.Context, scheduler *partScheduler
 			}
 			return nil
 		}
+		active.connMu.Lock()
+		active.retire = d.retireConnection
+		active.connMu.Unlock()
+		source, err := d.acquireSource(ctx, active.part.length())
+		if err != nil {
+			scheduler.finish(workerID, active)
+			return err
+		}
 
+		d.sourceMu.Lock()
+		state := d.sourceState[source]
+		startup := max(state.ttfb, state.headerTimeout/2)
+		if !state.bodySample {
+			startup = max(startup, slowConnectionMinAge)
+		}
+		d.sourceMu.Unlock()
+		if state.bodySample && !state.probation && time.Since(state.rateAt) <= 2*slowConnectionMinAge {
+			scheduler.prepare(workerID, active, state.rate, state.ttfb)
+		}
 		p := active.part
 		p.source = source
-		started := time.Now()
+		active.mu.Lock()
+		active.part.source = source
+		active.started = time.Now()
+		active.startup = startup
+		active.ready = true
+		active.mu.Unlock()
 		var probeProgress func(int64)
 		if p.concurrencyProbe {
 			probeProgress = func(bytes int64) {
 				scheduler.recordConcurrencyProbe(workerID, bytes)
 			}
 		}
-		offset, err := d.downloadRange(ctx, client, writer, active, source, p.probeIdleTimeout(), probeProgress)
+		offset, err := d.downloadRange(ctx, client, writer, active, source, &buffers, p.probeIdleTimeout(), probeProgress)
 		d.releaseSource(p.source)
 		scheduler.finish(workerID, active)
 		if err != nil {
+			if _, writeFailed := errors.AsType[rangeWriteError](err); writeFailed {
+				return err
+			}
 			if errors.Is(err, ErrSourceMismatch) {
 				return err
 			}
 			p.end = active.end.Load()
 			if offset <= p.end {
 				if ctx.Err() == nil && (len(d.sources) > 1 || isRetryableDownloadError(err)) {
-					retry := d.planRangeRetry(scheduler, workerID, p, offset, partSize, err)
-					if isSlowConnectionError(err) {
+					if errors.Is(err, errConnectionDegraded) && offset-p.start >= slowConnectionMinBytes {
+						p.requeues = 0
+					}
+					retry := d.planRangeRetry(scheduler, workerID, p, err)
+					if isSlowConnectionError(err) && !errors.Is(err, errConnectionDegraded) {
 						p.slowRetries++
 						p.allowSlow = p.slowRetries >= slowConnectionRetryLimit
 					}
@@ -111,6 +136,13 @@ func (d *downloader) runPartWorker(ctx context.Context, scheduler *partScheduler
 		}
 
 		scheduler.confirmRateProbe(p)
-		scheduler.record(workerID, max(offset-p.start, 0), time.Since(started))
+		active.mu.Lock()
+		bodyStarted, bodyOffset := active.bodyStarted, active.bodyOffset
+		writeTime := time.Duration(active.writeNanos.Load() - active.bodyWriteNanos)
+		latency := bodyStarted.Sub(active.started)
+		active.mu.Unlock()
+		if !bodyStarted.IsZero() {
+			scheduler.record(workerID, max(offset-bodyOffset, 0), max(time.Since(bodyStarted)-writeTime, time.Nanosecond), latency)
+		}
 	}
 }

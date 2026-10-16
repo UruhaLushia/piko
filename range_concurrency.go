@@ -14,11 +14,10 @@ const (
 // Startup uses all requested workers, then keeps only connections with
 // sustained progress during the sampling window.
 type concurrencyProbe struct {
-	bytes      []int64
-	enabled    []bool
-	timer      *time.Timer
-	timerEpoch int
-	done       bool
+	bytes   []int64
+	enabled []bool
+	timer   *time.Timer
+	done    bool
 }
 
 func newConcurrencyProbe(concurrency int) (int, concurrencyProbe) {
@@ -57,17 +56,13 @@ func (s *partScheduler) recordConcurrencyProbe(workerID int, bytes int64) {
 	}
 	s.probe.bytes[workerID] += bytes
 	if s.probe.timer == nil {
-		s.resetConcurrencyProbeTimerLocked()
+		s.startConcurrencyProbeTimerLocked()
 	}
 }
 
 func (s *partScheduler) workerEnabled(workerID int) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.probe.workerEnabled(workerID)
-}
-
-func (s *partScheduler) probeAllowsWorkerLocked(workerID int) bool {
 	return s.probe.workerEnabled(workerID)
 }
 
@@ -130,16 +125,11 @@ func (s *partScheduler) stopConcurrencyProbeLocked() {
 	s.probe.done = true
 }
 
-func (s *partScheduler) resetConcurrencyProbeTimerLocked() {
-	if s.probe.timer != nil {
-		s.probe.timer.Stop()
-	}
-	s.probe.timerEpoch++
-	timerEpoch := s.probe.timerEpoch
+func (s *partScheduler) startConcurrencyProbeTimerLocked() {
 	s.probe.timer = time.AfterFunc(concurrencyProbeWindow, func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		if !s.probe.active() || s.probe.timerEpoch != timerEpoch {
+		if !s.probe.active() {
 			return
 		}
 		s.limitConcurrencyProbeLocked()

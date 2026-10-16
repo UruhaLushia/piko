@@ -38,7 +38,7 @@ func NewContext(base *net.Dialer, resolver Resolver, selector *Selector) func(co
 				return conn, nil
 			}
 			if ctx.Err() == nil {
-				selector.RecordIP(ipAddrKey(ip), 0, 0, err)
+				selector.RecordIP(ipAddrKey(ip), 0, 0, 0, err)
 			}
 			lastErr = err
 		}
@@ -55,7 +55,7 @@ func dialFastestIP(ctx context.Context, base *net.Dialer, selector *Selector, ne
 	if len(ips) == 1 {
 		conn, err := base.DialContext(ctx, network, joinIPPort(ips[0], port))
 		if err != nil && ctx.Err() == nil {
-			selector.RecordIP(ipAddrKey(ips[0]), 0, 0, err)
+			selector.RecordIP(ipAddrKey(ips[0]), 0, 0, 0, err)
 		}
 		return conn, err
 	}
@@ -70,7 +70,7 @@ func dialFastestIP(ctx context.Context, base *net.Dialer, selector *Selector, ne
 		go func() {
 			conn, err := base.DialContext(ctx, network, address)
 			if err != nil && ctx.Err() == nil {
-				selector.RecordIP(ipAddrKey(ip), 0, 0, err)
+				selector.RecordIP(ipAddrKey(ip), 0, 0, 0, err)
 			}
 			if err == nil {
 				if !won.CompareAndSwap(false, true) {

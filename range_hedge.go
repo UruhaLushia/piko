@@ -32,11 +32,13 @@ func (d *downloader) hedgeRange(ctx context.Context, client *http.Client, p part
 		totalInflight += d.sourceState[i].inflight
 	}
 	second := -1
+	hedgeTimeout := 2 * time.Second
 	for i := range d.sources {
 		state := &d.sourceState[i]
 		if totalInflight < d.sourceConcurrency && i != first && !state.disabled && !time.Now().Before(state.cooldown) && state.inflight < d.sourceLimit {
 			second = i
 			state.inflight++
+			hedgeTimeout = max(hedgeTimeout, 4*state.ttfb, 4*d.sourceState[first].ttfb)
 			break
 		}
 	}
@@ -46,13 +48,13 @@ func (d *downloader) hedgeRange(ctx context.Context, client *http.Client, p part
 	}
 	defer d.releaseSource(second)
 	end := min(p.end, p.start+hedgeProbeBytes-1)
-	raceCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	raceCtx, cancel := context.WithTimeout(ctx, hedgeTimeout)
 	defer cancel()
 	results := make(chan hedgeResult, 2)
 	for _, source := range []int{first, second} {
 		go func(source int) {
 			started := time.Now()
-			d.recordSourceAttempt(source, 0)
+			d.recordSourceAttempt(source)
 			var data []byte
 			var received int
 			req, err := http.NewRequestWithContext(raceCtx, http.MethodGet, d.urlOf(source), nil)
@@ -63,15 +65,10 @@ func (d *downloader) hedgeRange(ctx context.Context, client *http.Client, p part
 				resp, requestErr := client.Do(req)
 				err = requestErr
 				if err == nil {
-					if resp.StatusCode != http.StatusPartialContent {
-						err = httpStatusError{partIndex: p.index, code: resp.StatusCode, status: resp.Status}
-					} else if err = validateContentRange(p.index, resp.Header.Get("Content-Range"), d.rangeOffset+p.start, d.rangeOffset+end, d.remoteSize); err == nil {
+					if err = validateRangeResponse(resp, p.index, d.rangeOffset+p.start, d.rangeOffset+end, d.remoteSize); err == nil {
 						data = make([]byte, end-p.start+1)
 						received, err = io.ReadFull(io.LimitReader(resp.Body, end-p.start+1), data)
 						data = data[:received]
-						if err == nil && received != int(end-p.start+1) {
-							err = io.ErrUnexpectedEOF
-						}
 					}
 					_ = resp.Body.Close()
 				}
@@ -81,7 +78,6 @@ func (d *downloader) hedgeRange(ctx context.Context, client *http.Client, p part
 		}(source)
 	}
 
-	// Keep only bytes already received by the loser; do not wait for a stalled mirror.
 	firstResult := <-results
 	var secondResult hedgeResult
 	if firstResult.err == nil {
@@ -89,8 +85,7 @@ func (d *downloader) hedgeRange(ctx context.Context, client *http.Client, p part
 		case secondResult = <-results:
 		case <-time.After(25 * time.Millisecond):
 			cancel()
-			// The first successful response is already usable. Do not wait for
-			// a stalled loser; a fast loser is still checked for byte mismatch.
+			// Compare a fast loser, but do not hold up usable bytes for a stalled mirror.
 			return firstResult.data, nil
 		}
 	} else {

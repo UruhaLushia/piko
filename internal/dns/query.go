@@ -24,11 +24,10 @@ func lookupIPAddr(ctx context.Context, host string, exchange func(context.Contex
 	for _, qtype := range qtypes {
 		go func() {
 			resp, err := exchange(ctx, newQuery(host, qtype))
-			if err != nil {
-				results <- queryResult{qtype: qtype, err: err}
-				return
+			var ips []net.IP
+			if err == nil {
+				ips, err = ipsFromResponse(resp, host, qtype)
 			}
-			ips, err := ipsFromResponse(resp, host, qtype)
 			results <- queryResult{qtype: qtype, ips: ips, err: err}
 		}()
 	}

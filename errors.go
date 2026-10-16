@@ -15,6 +15,13 @@ import (
 
 const statusBandwidthLimitExceeded = 509
 
+var errConnectionDegraded = dialer.ErrConnectionDegraded
+
+type rangeWriteError struct{ err error }
+
+func (e rangeWriteError) Error() string { return e.err.Error() }
+func (e rangeWriteError) Unwrap() error { return e.err }
+
 type httpStatusError struct {
 	partIndex int
 	code      int
@@ -33,6 +40,9 @@ type contentRangeError struct {
 
 var (
 	errRateProbeTimeout       = errors.New("rate probe timeout")
+	errResponseHeaderTimeout  = errors.New("download response headers stalled")
+	errSourceExploration      = errors.New("trying an unmeasured download source")
+	errConnectionReplaced     = errors.New("shared download connection replaced")
 	errConcurrencyProbeClosed = errors.New("concurrency probe connection closed")
 )
 
@@ -40,12 +50,15 @@ func (e contentRangeError) Error() string {
 	return fmt.Sprintf("part %d invalid Content-Range %q, expected %s", e.partIndex, e.value, e.expected)
 }
 
-func validateContentRange(partIndex int, value string, expectedStart int64, expectedEnd int64, expectedTotal ...int64) error {
-	expected := formatByteRange(expectedStart, expectedEnd)
-	total := int64(0)
-	if len(expectedTotal) > 0 {
-		total = expectedTotal[0]
+func validateRangeResponse(resp *http.Response, partIndex int, start, end, total int64) error {
+	if resp.StatusCode != http.StatusPartialContent {
+		return httpStatusError{partIndex: partIndex, code: resp.StatusCode, status: resp.Status}
 	}
+	return validateContentRange(partIndex, resp.Header.Get("Content-Range"), start, end, total)
+}
+
+func validateContentRange(partIndex int, value string, expectedStart int64, expectedEnd int64, total int64) error {
+	expected := formatByteRange(expectedStart, expectedEnd)
 	if total > 0 {
 		expected = fmt.Sprintf("bytes %d-%d/%d", expectedStart, expectedEnd, total)
 	}
@@ -84,8 +97,8 @@ func isRetryableDownloadError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return true
+	if _, writeFailed := errors.AsType[rangeWriteError](err); writeFailed {
+		return false
 	}
 	if statusErr, ok := errors.AsType[httpStatusError](err); ok {
 		return statusErr.code == http.StatusTooManyRequests || statusErr.code >= 500

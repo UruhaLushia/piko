@@ -122,7 +122,7 @@ func (o Options) normalize() Options {
 	}
 	o.Sources = append([]Source(nil), o.Sources...)
 	for i := range o.Sources {
-		o.Sources[i].Headers = cloneHeader(o.Sources[i].Headers)
+		o.Sources[i].Headers = o.Sources[i].Headers.Clone()
 	}
 	if o.ConcurrencyStrategy == ConcurrencyStrategyDefault {
 		o.ConcurrencyStrategy = defaults.ConcurrencyStrategy

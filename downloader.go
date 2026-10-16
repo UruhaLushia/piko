@@ -3,6 +3,7 @@ package piko
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -19,12 +20,15 @@ type downloader struct {
 	client              *http.Client
 	clients             []*http.Client
 	selector            *dialer.Selector
+	connectionMu        sync.Mutex
+	connections         map[net.Conn]*rangeConnectionState
 	sourceURL           string
 	url                 string
 	sources             []Source
 	sourceMu            sync.Mutex
 	sourceState         []sourceState
 	primarySource       int
+	exploreAt           time.Time
 	sourceLimit         int
 	ua                  string
 	headers             http.Header
@@ -49,11 +53,18 @@ type downloader struct {
 	speedMu      sync.Mutex
 	nextSpeedID  int64
 	activeSpeeds map[int64]rangeSpeed
+	recentSpeeds map[int]rangeSpeed
 }
 
 type rangeSpeed struct {
 	source int
 	rate   float64
+	at     time.Time
+}
+
+type rangeConnectionState struct {
+	users   int
+	retired atomic.Bool
 }
 
 type Client struct {
@@ -92,8 +103,11 @@ func NewClient(opts Options) (*Client, error) {
 		}
 		client = clients[0]
 	}
+	if selector == nil {
+		selector = newDialSelector(opts.ConnectionStrategy, opts.AddressFamily)
+	}
 
-	opts.Headers = cloneHeader(opts.Headers)
+	opts.Headers = opts.Headers.Clone()
 	return &Client{opts: opts, client: client, clients: clients, selector: selector}, nil
 }
 
@@ -209,13 +223,6 @@ func compactHTTPClients(clients []*http.Client) []*http.Client {
 	return compacted
 }
 
-func cloneHeader(header http.Header) http.Header {
-	if len(header) == 0 {
-		return nil
-	}
-	return header.Clone()
-}
-
 func (d *downloader) run(ctx context.Context, opts Options) (Result, error) {
 	result, err := d.plan(ctx, opts, true)
 	if err != nil {
@@ -238,12 +245,8 @@ func (d *downloader) run(ctx context.Context, opts Options) (Result, error) {
 	} else {
 		err = d.downloadSingle(ctx, result.Output, result.Size, opts.Force)
 	}
-	if err != nil {
-		result.SourceStats = d.sourceStats()
-		return result, err
-	}
 	result.SourceStats = d.sourceStats()
-	return result, nil
+	return result, err
 }
 
 func (d *downloader) plan(ctx context.Context, opts Options, allowDiscard bool) (Result, error) {
@@ -289,7 +292,7 @@ func (d *downloader) plan(ctx context.Context, opts Options, allowDiscard bool) 
 		}
 	}
 	parallel := connections > 1 && info.rangeable && selectionSize > 0
-	segmented := partial || parallel || (len(d.sources) > 1 && info.hasSizedRange()) || (opts.Resume && info.rangeable && selectionSize > 0)
+	segmented := partial || info.hasSizedRange()
 	if !segmented {
 		connections = 1
 	}
@@ -334,7 +337,11 @@ func selectedRange(total int64, offset int64, length int64) (int64, bool, error)
 func (d *downloader) setCommonHeaders(req *http.Request) {
 	req.Header.Set("User-Agent", d.ua)
 	req.Header.Set("Accept-Encoding", "identity")
-	for name, values := range d.headers {
+	applyHeaders(req, d.headers)
+}
+
+func applyHeaders(req *http.Request, headers http.Header) {
+	for name, values := range headers {
 		if strings.EqualFold(name, "Host") {
 			if len(values) > 0 {
 				req.Host = values[len(values)-1]
@@ -352,16 +359,5 @@ func (d *downloader) setSourceHeaders(req *http.Request, source int) {
 	if source < 0 || source >= len(d.sources) {
 		return
 	}
-	for name, values := range d.sources[source].Headers {
-		if strings.EqualFold(name, "Host") {
-			if len(values) > 0 {
-				req.Host = values[len(values)-1]
-			}
-			continue
-		}
-		req.Header.Del(name)
-		for _, value := range values {
-			req.Header.Add(name, value)
-		}
-	}
+	applyHeaders(req, d.sources[source].Headers)
 }

@@ -127,7 +127,7 @@ func (d *downloader) probeRangeSource(ctx context.Context, rawURL string, source
 		_ = resp.Body.Close()
 
 		if resp.StatusCode == http.StatusPartialContent {
-			if err := validateContentRange(0, resp.Header.Get("Content-Range"), 0, 0); err != nil {
+			if err := validateContentRange(0, resp.Header.Get("Content-Range"), 0, 0, 0); err != nil {
 				return remoteInfo{}, err
 			}
 			return remoteInfo{

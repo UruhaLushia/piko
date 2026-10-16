@@ -13,7 +13,7 @@ const (
 	rateLimitedPartMin = 32 * 1024 * 1024
 )
 
-func (s *partScheduler) record(workerID int, bytes int64, elapsed time.Duration) {
+func (s *partScheduler) record(workerID int, bytes int64, elapsed time.Duration, latency time.Duration) {
 	if workerID < 0 || workerID >= len(s.workerSize) || bytes <= 0 || elapsed <= 0 {
 		return
 	}
@@ -23,6 +23,7 @@ func (s *partScheduler) record(workerID int, bytes int64, elapsed time.Duration)
 	s.adjustPartSizeLocked(workerID, bytes, elapsed)
 	s.updatePartSizeHintLocked(s.workerPartSizeLocked(workerID))
 	s.updateWorkerRateLocked(workerID, float64(bytes)/elapsed.Seconds())
+	s.workerLatency[workerID] = latency
 	s.workerDone[workerID]++
 }
 
@@ -65,7 +66,90 @@ func (s *partScheduler) basePartSizeLocked(workerID int, remaining int64) int64 
 
 	targetParts := int64(s.effectiveConcurrencyLocked()) * s.tailPartsPerConnLocked()
 	partSize := (remaining + targetParts - 1) / targetParts
+	if workerID >= 0 && workerID < len(s.workerRate) {
+		// Divide startup-heavy work among workers still free to take new parts.
+		startupBytes := int64(s.workerRate[workerID] * s.workerLatency[workerID].Seconds() * 4)
+		waiting := int64(max(s.effectiveConcurrencyLocked()-s.activeCount, 1))
+		fairShare := (remaining + waiting - 1) / waiting
+		partSize = max(partSize, min(startupBytes, fairShare))
+	}
 	return clampPartSize(partSize, remaining, s.maxPartSize, minTailPartSize)
+}
+
+func (s *partScheduler) prepare(workerID int, active *activePart, rate float64, latency time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rate <= 0 || workerID < 0 || workerID >= len(s.workerRate) {
+		return
+	}
+	s.workerRate[workerID] = rate
+	s.workerLatency[workerID] = latency
+	if active.part.rateProbe || active.part.concurrencyProbe {
+		return
+	}
+	remaining := downloadSpanBytes(s.pending)
+	for _, p := range s.queue {
+		remaining += p.length()
+	}
+	if remaining == 0 || remaining > s.tailWindowLocked() {
+		return
+	}
+	// A new source can have a very different startup cost from this worker's last one.
+	target := min(s.maxPartSize, max(active.part.length(), int64(rate*latency.Seconds()*4)))
+	for active.part.length() < target {
+		grew := false
+		for i := range s.pending {
+			if active.part.requeues != 0 || active.part.slowRetries != 0 || active.part.allowSlow {
+				break
+			}
+			span := &s.pending[i]
+			if growPart(&active.part, &span.start, &span.end, target) {
+				if span.length() == 0 {
+					s.pending = append(s.pending[:i], s.pending[i+1:]...)
+				}
+				grew = true
+				break
+			}
+		}
+		if grew {
+			continue
+		}
+		for i := range s.queue {
+			p := &s.queue[i]
+			if p.rateProbe || p.concurrencyProbe || p.requeues != active.part.requeues || p.slowRetries != active.part.slowRetries || p.allowSlow != active.part.allowSlow {
+				continue
+			}
+			if growPart(&active.part, &p.start, &p.end, target) {
+				if p.length() == 0 {
+					s.queue = append(s.queue[:i], s.queue[i+1:]...)
+				}
+				grew = true
+				break
+			}
+		}
+		if !grew {
+			break
+		}
+	}
+	active.offset.Store(active.part.start)
+	active.end.Store(active.part.end)
+}
+
+func growPart(p *part, start, end *int64, target int64) bool {
+	extra := min(target-p.length(), *end-*start+1)
+	switch {
+	case extra <= 0:
+		return false
+	case *start == p.end+1:
+		p.end += extra
+		*start += extra
+	case *end+1 == p.start:
+		p.start -= extra
+		*end -= extra
+	default:
+		return false
+	}
+	return true
 }
 
 func (s *partScheduler) shouldWarmupLocked(workerID int) bool {

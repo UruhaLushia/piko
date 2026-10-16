@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-const asyncWriteQueueSize = 128
+const asyncWriteQueueSize = 8
 
 func (d *downloader) downloadParts(ctx context.Context, output string, size int64, partSize int64, concurrency int, force bool) error {
 	discard := IsNullOutput(output)
@@ -95,6 +95,7 @@ type asyncFileWriterAt struct {
 	file      *os.File
 	committed func(int64, int) error
 	ch        chan asyncFileWrite
+	buffers   chan []byte
 	done      chan struct{}
 
 	mu     sync.Mutex
@@ -112,7 +113,11 @@ func newAsyncFileWriterAt(file *os.File, committed func(int64, int) error) *asyn
 		file:      file,
 		committed: committed,
 		ch:        make(chan asyncFileWrite, asyncWriteQueueSize),
+		buffers:   make(chan []byte, asyncWriteQueueSize),
 		done:      make(chan struct{}),
+	}
+	for range asyncWriteQueueSize {
+		writer.buffers <- nil
 	}
 	go writer.run()
 	return writer
@@ -126,9 +131,23 @@ func (w *asyncFileWriterAt) WriteAt(p []byte, offset int64) (int, error) {
 		return 0, err
 	}
 
-	data := append([]byte(nil), p...)
-	w.ch <- asyncFileWrite{offset: offset, data: data}
-	return len(p), nil
+	written := 0
+	for written < len(p) {
+		data := <-w.buffers
+		if err := w.error(); err != nil {
+			w.buffers <- data
+			return written, err
+		}
+		size := min(len(p)-written, rangeWriteBufferSize)
+		if cap(data) < size {
+			data = make([]byte, size)
+		}
+		data = data[:size]
+		copy(data, p[written:written+size])
+		w.ch <- asyncFileWrite{offset: offset + int64(written), data: data}
+		written += size
+	}
+	return written, nil
 }
 
 func (w *asyncFileWriterAt) Close() error {
@@ -145,21 +164,17 @@ func (w *asyncFileWriterAt) Close() error {
 func (w *asyncFileWriterAt) run() {
 	defer close(w.done)
 	for write := range w.ch {
-		if w.error() != nil {
-			continue
-		}
-		written, err := w.file.WriteAt(write.data, write.offset)
-		if err != nil {
+		if w.error() == nil {
+			written, err := w.file.WriteAt(write.data, write.offset)
+			if err == nil && written != len(write.data) {
+				err = io.ErrShortWrite
+			}
+			if err == nil && w.committed != nil {
+				err = w.committed(write.offset, written)
+			}
 			w.setError(err)
-			continue
 		}
-		if written != len(write.data) {
-			w.setError(io.ErrShortWrite)
-			continue
-		}
-		if w.committed != nil {
-			w.setError(w.committed(write.offset, written))
-		}
+		w.buffers <- write.data[:0]
 	}
 }
 

@@ -3,29 +3,14 @@ package piko
 import (
 	"context"
 	"io"
-	"net"
-	"net/http"
+	"net/http/httptrace"
 	"time"
-
-	"github.com/UruhaLushia/piko/internal/dialer"
 )
 
 const (
 	rangeWriteBufferSize = 256 * 1024
 	maxBufferedRangeSize = 512 * 1024
 )
-
-func (d *downloader) copyRange(ctx context.Context, cancel context.CancelFunc, writer io.WriterAt, resp *http.Response, partIndex int, requestStart int64, requestEnd int64, remoteStart int64, remoteEnd int64, offset *int64, active *activePart, lease time.Duration, conn net.Conn, probeIdleTimeout time.Duration, probeProgress func(int64)) error {
-	if resp.StatusCode != http.StatusPartialContent {
-		return httpStatusError{partIndex: partIndex, code: resp.StatusCode, status: resp.Status}
-	}
-	if err := validateContentRange(partIndex, resp.Header.Get("Content-Range"), remoteStart, remoteEnd, d.remoteSize); err != nil {
-		return err
-	}
-
-	buffered := shouldBufferRangeWrite(writer, requestEnd-requestStart+1)
-	return d.copyRangeBody(ctx, cancel, writer, resp.Body, requestStart, offset, active, lease, conn, buffered, probeIdleTimeout, probeProgress)
-}
 
 func shouldBufferRangeWrite(writer io.WriterAt, size int64) bool {
 	if size > maxBufferedRangeSize {
@@ -39,7 +24,11 @@ func shouldBufferRangeWrite(writer io.WriterAt, size int64) bool {
 	}
 }
 
-func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFunc, writer io.WriterAt, reader io.Reader, requestStart int64, offset *int64, active *activePart, lease time.Duration, conn net.Conn, buffered bool, probeIdleTimeout time.Duration, probeProgress func(int64)) error {
+type rangeBuffers struct {
+	read, write []byte
+}
+
+func (d *downloader) copyRangeBody(ctx context.Context, abort func(), writer io.WriterAt, reader io.Reader, offset *int64, active *activePart, lease time.Duration, connection httptrace.GotConnInfo, ipKey string, buffers *rangeBuffers, buffered bool, probeIdleTimeout time.Duration, probeProgress func(int64)) error {
 	state := rangeWriteState{
 		d:        d,
 		writer:   writer,
@@ -48,13 +37,17 @@ func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFun
 		buffered: buffered,
 	}
 	if buffered {
-		state.buffer = make([]byte, 0, int(min(active.part.length(), int64(maxBufferedRangeSize))))
+		size := int(min(active.part.length(), int64(maxBufferedRangeSize)))
+		if cap(buffers.write) < size {
+			buffers.write = make([]byte, 0, size)
+		}
+		state.buffer = buffers.write[:0]
 	}
-	buf := make([]byte, rangeWriteBufferSize)
-	abort := func() {
-		cancel()
-		closeConn(conn)
+	size := int(min(active.part.length(), int64(rangeWriteBufferSize)))
+	if len(buffers.read) < size {
+		buffers.read = make([]byte, size)
 	}
+	buf := buffers.read
 	progress := d.startStallMonitor(abort)
 	if progress != nil {
 		defer close(progress)
@@ -63,18 +56,14 @@ func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFun
 	defer stopLease()
 	probeTimer := newIdleTimer(probeIdleTimeout, abort)
 	defer probeTimer.stop()
-	var tailTimer *idleTimer
-	defer func() { tailTimer.stop() }()
-
-	speedID := d.registerRangeSpeed(active.part.source)
-	defer d.unregisterRangeSpeed(speedID)
-	started := time.Now()
-	lastCheck := started
-	lastOffset := *offset
-	slowStrikes := 0
+	stopSpeed, slow := d.startRangeSpeedMonitor(ctx, active, *offset, connection, ipKey, abort)
+	defer stopSpeed()
 
 	for {
 		if err := ctx.Err(); err != nil {
+			if slowErr := slow.err(); slowErr != nil {
+				return state.finish(slowErr)
+			}
 			if probeTimer.expired() {
 				return state.finish(errRateProbeTimeout)
 			}
@@ -85,14 +74,10 @@ func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFun
 		if *offset > end {
 			return state.flush()
 		}
-		if !active.part.allowSlow && probeIdleTimeout <= 0 && tailTimer == nil && end-*offset+1 <= slowTailWindow {
-			tailTimer = newIdleTimer(slowTailIdleTimeout, abort)
-		}
 		readSize := min(int64(len(buf)), end-*offset+1)
 		n, readErr := reader.Read(buf[:int(readSize)])
 		if n > 0 {
 			probeTimer.reset(probeIdleTimeout)
-			tailTimer.reset(slowTailIdleTimeout)
 			if progress != nil {
 				select {
 				case progress <- struct{}{}:
@@ -106,38 +91,6 @@ func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFun
 			if probeProgress != nil {
 				probeProgress(writeSize)
 			}
-			if writeSize > 0 {
-				now := time.Now()
-				remaining := active.end.Load() - *offset + 1
-				checkInterval := slowConnectionCheckInterval
-				if remaining <= slowTailWindow {
-					checkInterval = slowTailCheckInterval
-				}
-				if now.Sub(lastCheck) >= checkInterval {
-					speed := float64(*offset-lastOffset) / now.Sub(lastCheck).Seconds()
-					active.mu.Lock()
-					active.recentRate = speed
-					active.recentRateAt = now
-					active.mu.Unlock()
-					avg, peers, otherAvg := d.updateRangeSpeed(speedID, speed)
-					slow := !active.part.allowSlow && shouldCloseSlowConnection(speed, avg, otherAvg, peers, now.Sub(started), *offset-requestStart, remaining)
-					if slow && remaining <= slowTailWindow {
-						abort()
-						return state.finish(dialer.ErrSlowConnection)
-					}
-					if slow {
-						slowStrikes++
-					} else {
-						slowStrikes = 0
-					}
-					lastCheck = now
-					lastOffset = *offset
-					if slowStrikes >= slowConnectionStrikes {
-						abort()
-						return state.finish(dialer.ErrSlowConnection)
-					}
-				}
-			}
 			if writeSize < int64(n) {
 				return state.flush()
 			}
@@ -150,6 +103,9 @@ func (d *downloader) copyRangeBody(ctx context.Context, cancel context.CancelFun
 			return state.finish(io.ErrUnexpectedEOF)
 		}
 		if readErr != nil {
+			if slowErr := slow.err(); slowErr != nil {
+				return state.finish(slowErr)
+			}
 			if probeTimer.expired() {
 				return state.finish(errRateProbeTimeout)
 			}
@@ -173,14 +129,15 @@ type rangeWriteState struct {
 
 func (s *rangeWriteState) write(data []byte) (int64, error) {
 	s.active.mu.Lock()
-	defer s.active.mu.Unlock()
 
 	end := s.active.end.Load()
 	if *s.offset > end {
+		s.active.mu.Unlock()
 		return 0, nil
 	}
 	writeSize := min(int64(len(data)), end-*s.offset+1)
 	if writeSize <= 0 {
+		s.active.mu.Unlock()
 		return 0, nil
 	}
 	if s.buffered {
@@ -190,15 +147,19 @@ func (s *rangeWriteState) write(data []byte) (int64, error) {
 		s.buffer = append(s.buffer, data[:int(writeSize)]...)
 		*s.offset += writeSize
 		s.active.offset.Store(*s.offset)
+		s.active.mu.Unlock()
 		return writeSize, nil
 	}
 
-	written, err := s.writer.WriteAt(data[:int(writeSize)], *s.offset)
+	// Reserve ownership before disk backpressure can block this worker.
+	s.active.offset.Store(*s.offset + writeSize)
+	s.active.mu.Unlock()
+	written, err := s.writeAt(data[:int(writeSize)], *s.offset)
 	if err != nil {
-		return 0, err
+		return 0, rangeWriteError{err}
 	}
 	if int64(written) != writeSize {
-		return 0, io.ErrShortWrite
+		return 0, rangeWriteError{io.ErrShortWrite}
 	}
 	*s.offset += writeSize
 	s.active.offset.Store(*s.offset)
@@ -217,40 +178,32 @@ func (s *rangeWriteState) flush() error {
 	if len(s.buffer) == 0 {
 		return nil
 	}
-	written, err := s.writer.WriteAt(s.buffer, s.bufferStart)
+	written, err := s.writeAt(s.buffer, s.bufferStart)
 	if err != nil {
-		return err
+		return rangeWriteError{err}
 	}
 	if written != len(s.buffer) {
-		return io.ErrShortWrite
+		return rangeWriteError{io.ErrShortWrite}
 	}
 	s.d.addProgress(int64(len(s.buffer)), 0)
 	s.buffer = s.buffer[:0]
 	return nil
 }
 
-func shouldCloseSlowConnection(speed float64, avg float64, otherAvg float64, peers int, age time.Duration, bytes int64, remaining int64) bool {
-	if otherAvg > 0 &&
-		age >= slowConnectionMinAge &&
-		bytes >= slowConnectionMinBytes &&
-		speed < otherAvg*slowConnectionSourceRatio {
-		return true
+func (s *rangeWriteState) writeAt(data []byte, offset int64) (int, error) {
+	s.active.writing.Store(true)
+	started := time.Now()
+	written, err := s.writer.WriteAt(data, offset)
+	s.active.writeNanos.Add(time.Since(started).Nanoseconds())
+	s.active.writing.Store(false)
+	return written, err
+}
+
+func shouldCloseSlowConnection(speed, avg, otherAvg float64, peers int, bytes int64) bool {
+	if otherAvg > 0 {
+		return speed < otherAvg*slowConnectionSourceRatio
 	}
-	if peers >= slowConnectionMinPeers &&
-		age >= slowConnectionMinAge &&
-		bytes >= slowConnectionMinBytes &&
-		avg > 0 &&
-		speed > 0 &&
-		speed < avg*slowConnectionRatio {
-		return true
-	}
-	return remaining > 0 &&
-		remaining <= slowTailWindow &&
-		age >= slowTailMinAge &&
-		peers >= 2 &&
-		avg > 0 &&
-		speed > 0 &&
-		speed < avg*slowConnectionRatio
+	return peers >= slowConnectionMinPeers && bytes >= slowConnectionMinBytes && speed > 0 && speed < avg*slowConnectionRatio
 }
 
 type discardWriterAt struct{}

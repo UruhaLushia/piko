@@ -74,20 +74,20 @@ func applyConfig(cmd *cobra.Command, opts *cliOptions) error {
 	applyValue(cmd, "connections", &opts.connections, config.Download.Connections)
 	applyValue(cmd, "retry", &opts.retries, config.Download.Retry)
 	applyValue(cmd, "part-size", &opts.partSize, config.Download.PartSize)
-	if config.Download.Timeout.Set && !flagChanged(cmd, "timeout") {
+	if config.Download.Timeout.Set && !cmd.Flags().Changed("timeout") {
 		opts.timeout = config.Download.Timeout.Duration
 	}
-	if config.Download.StallTimeout.Set && !flagChanged(cmd, "stall-timeout") {
+	if config.Download.StallTimeout.Set && !cmd.Flags().Changed("stall-timeout") {
 		opts.stallTimeout = config.Download.StallTimeout.Duration
 	}
 	applyValue(cmd, "http", &opts.protocol, config.HTTP.Protocol)
 	applyValue(cmd, "connect-strategy", &opts.strategy, config.Network.ConnectStrategy)
 	applyValue(cmd, "ip-family", &opts.ipFamily, config.Network.IPFamily)
-	if config.HTTP.Headers.Set && !flagChanged(cmd, "header") {
+	if config.HTTP.Headers.Set && !cmd.Flags().Changed("header") {
 		opts.headers = config.HTTP.Headers.Values
 	}
 	applyValue(cmd, "proxy", &opts.proxy, config.Network.Proxy)
-	if config.Network.DNS.Set && !flagChanged(cmd, "dns") {
+	if config.Network.DNS.Set && !cmd.Flags().Changed("dns") {
 		opts.dnsServers = compactStrings(config.Network.DNS.Values)
 	}
 	applyValue(cmd, "user-agent", &opts.userAgent, config.HTTP.UserAgent)
@@ -118,7 +118,12 @@ func readConfig(path string, required bool) (*fileConfig, error) {
 	case ".yaml", ".yml":
 		err = yaml.Unmarshal(data, &config)
 	case ".toml":
-		err = toml.Unmarshal(data, &config)
+		var values map[string]any
+		if err = toml.Unmarshal(data, &values); err == nil {
+			if data, err = json.Marshal(values); err == nil {
+				err = json.Unmarshal(data, &config)
+			}
+		}
 	default:
 		err = fmt.Errorf("unsupported config format %q", filepath.Ext(configPath))
 	}
@@ -171,12 +176,8 @@ func expandHome(path string) string {
 	return path
 }
 
-func flagChanged(cmd *cobra.Command, name string) bool {
-	return cmd.Flags().Changed(name)
-}
-
 func applyValue[T any](cmd *cobra.Command, flag string, target *T, value *T) {
-	if value != nil && !flagChanged(cmd, flag) {
+	if value != nil && !cmd.Flags().Changed(flag) {
 		*target = *value
 	}
 }

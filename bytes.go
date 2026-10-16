@@ -24,14 +24,13 @@ func (d *downloader) runBytes(ctx context.Context, opts Options) ([]byte, Result
 	} else {
 		data, err = d.downloadSingleToBytes(ctx, result.Size)
 	}
+	result.SourceStats = d.sourceStats()
 	if err != nil {
-		result.SourceStats = d.sourceStats()
 		return nil, result, err
 	}
 	if result.Size <= 0 {
 		result.Size = int64(len(data))
 	}
-	result.SourceStats = d.sourceStats()
 	return data, result, nil
 }
 
@@ -85,41 +84,24 @@ func (d *downloader) runBytesRange(ctx context.Context, opts Options) ([]byte, R
 
 	d.total = opts.Length
 	data, err := d.downloadPartsToBytes(ctx, opts.Length, opts.PartSize, connections)
-	if err != nil {
-		result.SourceStats = d.sourceStats()
-		return nil, result, err
-	}
 	result.SourceStats = d.sourceStats()
-	return data, result, nil
+	return data, result, err
 }
 
 func (d *downloader) downloadSingleToBytes(ctx context.Context, total int64) ([]byte, error) {
-	var lastErr error
-	for attempt := 0; attempt <= d.retries; attempt++ {
-		d.done.Store(0)
-
-		var buf bytes.Buffer
-		if total > 0 && total <= int64(maxInt()) {
-			buf.Grow(int(total))
-		}
-
-		copied, err := d.downloadSingleToWriter(ctx, &buf, total)
-		if err == nil && total > 0 && copied != total {
-			err = io.ErrUnexpectedEOF
-		}
-		if err == nil {
-			d.emitProgress(total, true)
-			return buf.Bytes(), nil
-		}
-		lastErr = err
-		if !isRetryableDownloadError(lastErr) || attempt == d.retries {
-			break
-		}
-		if err := sleepWithContext(ctx, retryDelay(attempt)); err != nil {
-			return nil, err
-		}
+	var buf bytes.Buffer
+	if total > 0 && total <= int64(maxInt()) {
+		buf.Grow(int(total))
 	}
-	return nil, lastErr
+	err := d.retrySingle(ctx, total, func() error {
+		buf.Reset()
+		_, err := d.downloadSingleToWriter(ctx, &buf, total)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func (d *downloader) downloadPartsToBytes(ctx context.Context, size int64, partSize int64, concurrency int) ([]byte, error) {

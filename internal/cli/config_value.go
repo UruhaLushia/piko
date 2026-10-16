@@ -22,10 +22,6 @@ func (l *stringListConfig) UnmarshalYAML(value *yaml.Node) error {
 	return unmarshalConfigYAML(value, l.set)
 }
 
-func (l *stringListConfig) UnmarshalTOML(value any) error {
-	return l.set(value)
-}
-
 func (l *stringListConfig) set(value any) error {
 	values, err := stringListFromAny(value)
 	if err != nil {
@@ -81,10 +77,6 @@ func (d *configDuration) UnmarshalJSON(data []byte) error {
 
 func (d *configDuration) UnmarshalYAML(value *yaml.Node) error {
 	return unmarshalConfigYAML(value, d.set)
-}
-
-func (d *configDuration) UnmarshalTOML(value any) error {
-	return d.set(value)
 }
 
 func (d *configDuration) set(value any) error {
