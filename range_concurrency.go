@@ -132,6 +132,19 @@ func (s *partScheduler) startConcurrencyProbeTimerLocked() {
 		if !s.probe.active() {
 			return
 		}
+		for _, active := range s.active {
+			if active == nil {
+				continue
+			}
+			active.mu.Lock()
+			waiting := active.bodyStarted.IsZero() && time.Since(active.started) < active.startup+concurrencyProbeWindow
+			warming := !active.bodyStarted.IsZero() && time.Since(active.bodyStarted) < concurrencyProbeWindow
+			active.mu.Unlock()
+			if waiting || warming {
+				s.startConcurrencyProbeTimerLocked()
+				return
+			}
+		}
 		s.limitConcurrencyProbeLocked()
 		if s.maxActive < s.concurrency {
 			s.rateLimited = true

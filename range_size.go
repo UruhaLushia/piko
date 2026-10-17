@@ -54,7 +54,9 @@ func (s *partScheduler) penalize(workerID int) {
 
 func (s *partScheduler) basePartSizeLocked(workerID int, remaining int64) int64 {
 	if s.probe.workerPending(workerID) {
-		return min(remaining, min(s.maxPartSize, min(s.initialPartSize, int64(warmupPartSize))))
+		waiting := int64(max(s.effectiveConcurrencyLocked()-s.activeCount, 1))
+		share := (remaining + waiting - 1) / waiting
+		return min(share, s.maxPartSize, s.initialPartSize, int64(warmupPartSize))
 	}
 	if s.shouldWarmupLocked(workerID) {
 		return min(remaining, min(s.maxPartSize, int64(warmupPartSize)))
@@ -133,6 +135,23 @@ func (s *partScheduler) prepare(workerID int, active *activePart, rate float64, 
 	}
 	active.offset.Store(active.part.start)
 	active.end.Store(active.part.end)
+}
+
+func (s *partScheduler) limitPart(active *activePart, size int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	active.mu.Lock()
+	defer active.mu.Unlock()
+	end := active.end.Load()
+	if size <= 0 || size >= end-active.part.start+1 {
+		return
+	}
+	rest := active.part
+	rest.end = end
+	rest.start += size
+	active.part.end = rest.start - 1
+	active.end.Store(active.part.end)
+	s.queue = append(s.queue, rest)
 }
 
 func growPart(p *part, start, end *int64, target int64) bool {

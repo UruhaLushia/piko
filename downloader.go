@@ -287,6 +287,10 @@ func (d *downloader) plan(ctx context.Context, opts Options, allowDiscard bool) 
 	if connections > 1 && info.rangeable && selectionSize > 0 {
 		bytesPerConnection := max(opts.PartSize, int64(minBytesPerConnection))
 		maxUseful := max(int((selectionSize+bytesPerConnection-1)/bytesPerConnection), 1)
+		if len(d.sources) > 1 {
+			samples := int((selectionSize + minTailPartSize - 1) / minTailPartSize)
+			maxUseful = max(maxUseful, min(len(d.sources), samples))
+		}
 		if connections > maxUseful {
 			connections = maxUseful
 		}

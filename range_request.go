@@ -274,6 +274,18 @@ func (d *downloader) downloadRangeAttempt(ctx context.Context, client *http.Clie
 			d.selector.RecordIP(key, offset-start, bodyElapsed(), bodyStarted.Sub(started), resultErr)
 		}
 		d.finishSource(p.source, offset-start, bodyElapsed(), resultErr)
+		if isSlowConnectionError(resultErr) {
+			active.mu.Lock()
+			rate, at := active.recentRate, active.recentRateAt
+			active.mu.Unlock()
+			if time.Since(at) <= 2*slowConnectionCheckInterval {
+				d.sourceMu.Lock()
+				state := &d.sourceState[p.source]
+				state.rate = min(state.rate, rate)
+				state.rateAt = at
+				d.sourceMu.Unlock()
+			}
+		}
 	}()
 	resp, err := client.Do(req)
 	headerTimer.stop()

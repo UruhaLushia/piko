@@ -68,6 +68,7 @@ type delayedPart struct {
 
 type activePart struct {
 	mu             sync.Mutex
+	sample         func() bool
 	part           part
 	started        time.Time
 	bodyStarted    time.Time
@@ -298,8 +299,12 @@ func (s *partScheduler) stealPartLocked(workerID int) (part, bool) {
 		}
 
 		active.mu.Lock()
-		age := now.Sub(active.started)
-		if !active.ready || active.writing.Load() || age < minStealAge || (active.bodyStarted.IsZero() && age < active.startup+minStealAge) {
+		started, minimumAge := active.bodyStarted, minStealAge
+		if started.IsZero() {
+			started = active.started
+			minimumAge += active.startup
+		}
+		if !active.ready || active.writing.Load() || now.Sub(started) < minimumAge {
 			active.mu.Unlock()
 			continue
 		}

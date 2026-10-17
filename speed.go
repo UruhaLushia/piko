@@ -190,6 +190,10 @@ func (d *downloader) startRangeSpeedMonitor(ctx context.Context, active *activeP
 				return
 			case now := <-ticker.C:
 				offset := active.offset.Load()
+				if offset-start >= slowConnectionMinBytes {
+					minAge = max(slowConnectionCheckInterval, 4*ttfb)
+					stallAge = minAge
+				}
 				writeNanos := active.writeNanos.Load()
 				writeTime := time.Duration(writeNanos - lastWriteNanos)
 				lastWriteNanos = writeNanos

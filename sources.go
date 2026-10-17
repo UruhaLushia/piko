@@ -152,6 +152,7 @@ func (d *downloader) acquireSource(ctx context.Context, bytes int64) (int, error
 		best, score, available := -1, 0.0, false
 		totalInflight := 0
 		probing, measured := 0, false
+		referenceRate := 0.0
 		for i := range d.sourceState {
 			s := &d.sourceState[i]
 			totalInflight += s.inflight
@@ -159,6 +160,9 @@ func (d *downloader) acquireSource(ctx context.Context, bytes int64) (int, error
 				probing += s.inflight
 			} else if !s.disabled && s.rate > 0 {
 				measured = true
+				if time.Since(s.rateAt) <= 2*slowConnectionMinAge {
+					referenceRate = max(referenceRate, s.rate)
+				}
 			}
 		}
 		for i := range d.sources {
@@ -187,11 +191,15 @@ func (d *downloader) acquireSource(ctx context.Context, bytes int64) (int, error
 			eta := s.ttfb.Seconds() + float64(max(bytes, 1))*float64(s.inflight+1)/max(s.rate, 1)
 			// Explore unused mirrors before concentrating on measured throughput.
 			if s.attempts == 0 || s.probation {
-				eta = float64(s.inflight) + s.ttfb.Seconds()
-				if s.probation {
-					eta += sourceInspectBudget.Seconds()
-				}
+				latency := s.ttfb.Seconds()
 				if s.finalURL == "" {
+					latency = max(latency, sourceInspectBudget.Seconds())
+				}
+				eta = float64(s.inflight) + latency
+				if referenceRate > 0 {
+					eta = latency + float64(max(bytes, 1))*float64(s.inflight+1)*slowConnectionSourceRatio/referenceRate
+				}
+				if s.probation {
 					eta += sourceInspectBudget.Seconds()
 				}
 			}
@@ -239,7 +247,7 @@ func (d *downloader) finishSource(source int, bytes int64, elapsed time.Duration
 		s.recoveryBytes = 0
 	}
 	if s.rate == 0 && bytes > 0 && elapsed > 0 {
-		s.rate = float64(bytes) / (elapsed + s.ttfb).Seconds()
+		s.rate = float64(bytes) / elapsed.Seconds()
 		s.rateAt = time.Now()
 	}
 	if bytes >= minDynamicPartSize && elapsed >= slowConnectionCheckInterval/4 {
@@ -370,6 +378,33 @@ func (d *downloader) claimSourceExploration() bool {
 	for _, s := range d.sourceState {
 		if !s.disabled && s.inflight == 0 && (s.attempts == 0 || (s.probation && time.Now().After(s.cooldown))) {
 			d.exploreAt = time.Now()
+			return true
+		}
+	}
+	return false
+}
+
+func (d *downloader) sourceSampleWorthwhile(source int, bytes int64, elapsed time.Duration, remaining int64) bool {
+	if remaining <= 0 || bytes <= 0 || elapsed <= 0 {
+		return false
+	}
+	rate := float64(bytes) / elapsed.Seconds()
+	currentETA := float64(remaining) / rate
+	d.sourceMu.Lock()
+	defer d.sourceMu.Unlock()
+	for i, state := range d.sourceState {
+		if i == source || state.disabled || state.inflight > 0 || time.Now().Before(state.cooldown) || (state.attempts > 0 && !state.probation) {
+			continue
+		}
+		latency := state.ttfb.Seconds()
+		if state.finalURL == "" {
+			latency = max(latency, sourceInspectBudget.Seconds())
+		}
+		if state.probation {
+			latency += sourceInspectBudget.Seconds()
+		}
+		alternativeETA := latency + float64(remaining)*slowConnectionSourceRatio/rate
+		if currentETA-alternativeETA >= minStealAge.Seconds() {
 			return true
 		}
 	}

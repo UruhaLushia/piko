@@ -88,6 +88,22 @@ func (d *downloader) runPartWorker(ctx context.Context, scheduler *partScheduler
 			startup = max(startup, slowConnectionMinAge)
 		}
 		d.sourceMu.Unlock()
+		if len(d.sources) > 1 && (!state.bodySample || state.probation) {
+			active.sample = func() bool {
+				active.mu.Lock()
+				bodyBytes := active.offset.Load() - active.bodyOffset
+				elapsed := time.Since(active.bodyStarted) - time.Duration(active.writeNanos.Load()-active.bodyWriteNanos)
+				active.mu.Unlock()
+				if elapsed < minStealAge || (bodyBytes < minTailPartSize && elapsed < slowConnectionCheckInterval) {
+					return false
+				}
+				remaining := active.end.Load() - active.offset.Load() + 1
+				if d.sourceSampleWorthwhile(source, bodyBytes, elapsed, remaining) {
+					scheduler.limitPart(active, active.offset.Load()-active.part.start)
+				}
+				return true
+			}
+		}
 		if state.bodySample && !state.probation && time.Since(state.rateAt) <= 2*slowConnectionMinAge {
 			scheduler.prepare(workerID, active, state.rate, state.ttfb)
 		}

@@ -58,6 +58,7 @@ func (d *downloader) copyRangeBody(ctx context.Context, abort func(), writer io.
 	defer probeTimer.stop()
 	stopSpeed, slow := d.startRangeSpeedMonitor(ctx, active, *offset, connection, ipKey, abort)
 	defer stopSpeed()
+	sampled := false
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -90,6 +91,9 @@ func (d *downloader) copyRangeBody(ctx context.Context, abort func(), writer io.
 			}
 			if probeProgress != nil {
 				probeProgress(writeSize)
+			}
+			if !sampled && active.sample != nil {
+				sampled = active.sample()
 			}
 			if writeSize < int64(n) {
 				return state.flush()
